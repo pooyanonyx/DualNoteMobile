@@ -1,6 +1,6 @@
 // DualNote service worker: makes the app work offline after the first visit.
 // Bump CACHE when you change files so devices pick up the new version.
-const CACHE = "dualnote-v1";
+const CACHE = "dualnote-v2";
 
 self.addEventListener("install", (e) => {
   e.waitUntil((async () => {
