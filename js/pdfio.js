@@ -69,6 +69,11 @@ export function renderRaster(doc, i, scale) {
   return { promise, cancel() { cancelled = true; try { task && task.cancel(); } catch { /* ignore */ } } };
 }
 
+/** Let pdf.js drop the parsed data of a page that is no longer on screen (saves memory on long PDFs). */
+export function releasePage(doc, i) {
+  doc.getPage(i + 1).then((p) => p.cleanup()).catch(() => {});
+}
+
 const wordCache = new WeakMap();
 /** Words of page i with boxes in page points (top-left origin), in reading order: [{x0,y0,x1,y1,line}] */
 export async function pageWords(doc, i) {

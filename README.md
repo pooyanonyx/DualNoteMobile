@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # DualNote Mobile
 
 PDF annotator and notebook side by side. Installable web app (PWA) that works offline.
@@ -19,6 +18,3 @@ GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 ## Notes
 After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v3`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
-=======
-hi
->>>>>>> 92ebbdedf20f20a13e87396cf3d48144e042c35f

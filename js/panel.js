@@ -28,6 +28,10 @@ export function defaultGroups(color = "#d32f2f") {
 }
 const HANDLE_R = 7;                       // drawn handle radius (screen px)
 const MAX_IMAGE_SIDE = 2400;
+const GAP = 12;                      // space between pages in the continuous PDF view (page units)
+const RASTER_BUDGET = 40e6;          // max total pixels of cached page bitmaps (memory limit)
+const RASTER_MAX = 12;               // max cached page bitmaps
+const freeCanvas = (c) => { try { c.width = c.height = 0; } catch { /* ignore */ } };
 
 export class Panel {
   constructor(app, key, kind, label) {
@@ -43,7 +47,10 @@ export class Panel {
     this.recent = [];
     this.selected = null; this.live = null; this.preview = null; this.action = null;
     this.editing = null; this.pointers = new Map(); this.gesture = null; this.lastPen = 0; this.lastTap = null;
-    this.pdf = null; this.sizes = []; this.words = null; this.raster = null; this.rasterJob = null; this.rasterTimer = 0; this.pageToken = 0;
+    this.pdf = null; this.sizes = []; this.words = null; this.wordsPage = -1; this.pageToken = 0;
+    // continuous PDF view: page layout + cached page bitmaps (only pages near the screen are rendered)
+    this.rasters = new Map(); this.rasterJob = null; this.rasterTimer = 0; this.badPages = new Set();
+    this.sizeJobs = new Map(); this.offs = null; this.docW = 595; this.docH = 842; this.vp = 0; this.vpLock = null; this.fling = 0;
     this._raf = 0; this.barsOpen = true;
     this.buildDom();
     this.setTool("pen", true);
@@ -56,7 +63,11 @@ export class Panel {
   get items() { return this.pages[this.cur]?.items ?? []; }
   get drawList() { return this.live ?? this.items; }
   get hasPage() { return this.kind === "nb" || !!this.pdf; }
-  pageDims() { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : (this.sizes[this.cur] || [595, 842]); }
+  pageDims() { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : this.sizeOf(this.cur); }
+  continuous() { return this.kind === "pdf"; }                       // PDFs scroll continuously; notebooks are paged
+  shown() { return this.continuous() ? this.vp : this.cur; }         // page number shown in the toolbar
+  defSize() { return this.sizes[0] || this.sizes.find(Boolean) || [595, 842]; }
+  sizeOf(i) { return this.sizes[i] || this.defSize(); }
   snap() { return this.pages.map((p) => ({ paper: p.paper, items: p.items.slice() })); }
   restoreSnap(s) { this.pages = s.map((p) => (this.kind === "nb" ? { paper: p.paper, items: p.items.slice() } : { items: p.items.slice() })); }
 
@@ -165,6 +176,7 @@ export class Panel {
     const g = GROUP_OF_TOOL[tool];
     if (g) this.curStyle = { ...this.groups[g] };
     this.updateColorDot();
+    if (tool === "hltext") this.ensureWords();
     if (!silent) this.render();
   }
   groupKey() { return GROUP_OF_TOOL[this.tool] || null; }
@@ -219,18 +231,30 @@ export class Panel {
     this.render(); this.scheduleRaster();
   }
   fitView(userAction = true) {
-    const [w] = this.pageDims();
+    const doc = this.continuous() && this.offs, v = this.view;
+    const w = doc ? this.sizeOf(this.vp)[0] : this.pageDims()[0];
     const margin = this.cw < 500 ? 6 : 14;
-    this.view.scale = clamp((this.cw - 2 * margin) / w, 0.2, 6);
-    this.view.fit = true;
-    this.view.tx = (this.cw - w * this.view.scale) / 2;
-    this.view.ty = margin;
+    const anchor = doc ? this.offs[this.vp] * v.scale + v.ty : 0;      // where the current page's top is on screen
+    v.scale = clamp((this.cw - 2 * margin) / w, 0.2, 6);
+    v.fit = true;
+    if (doc) {
+      v.tx = (this.cw - this.docW * v.scale) / 2;
+      v.ty = (userAction ? margin : anchor) - this.offs[this.vp] * v.scale;
+      this.clampView();
+    } else { v.tx = (this.cw - w * v.scale) / 2; v.ty = margin; }
     if (userAction) { this.render(); this.scheduleRaster(); }
   }
-  clampView() {
-    const [w, h] = this.pageDims(), s = this.view.scale, pw = w * s, ph = h * s, m = 80;
-    this.view.tx = pw <= this.cw ? (this.cw - pw) / 2 : clamp(this.view.tx, this.cw - pw - m, m);
-    this.view.ty = ph <= this.ch - 16 ? clamp(this.view.ty, 8, this.ch - ph - 8) : clamp(this.view.ty, this.ch - ph - m, m);
+  clampView(m = 80) {
+    const v = this.view, s = v.scale;
+    if (this.continuous() && this.offs) {                      // whole document = one tall column
+      const dw = this.docW * s, dh = this.docH * s;
+      v.tx = dw <= this.cw ? (this.cw - dw) / 2 : clamp(v.tx, this.cw - dw - m, m);
+      v.ty = dh <= this.ch - 16 ? clamp(v.ty, 8, this.ch - dh - 8) : clamp(v.ty, this.ch - dh - m, m);
+      return;
+    }
+    const [w, h] = this.pageDims(), pw = w * s, ph = h * s;
+    v.tx = pw <= this.cw ? (this.cw - pw) / 2 : clamp(v.tx, this.cw - pw - m, m);
+    v.ty = ph <= this.ch - 16 ? clamp(v.ty, 8, this.ch - ph - 8) : clamp(v.ty, this.ch - ph - m, m);
   }
   zoomAt(factor, cx, cy) {
     const old = this.view.scale, s = clamp(old * factor, 0.2, 6), k = s / old;
@@ -239,35 +263,236 @@ export class Panel {
     this.clampView(); this.positionEditor(); this.render(); this.scheduleRaster();
   }
   zoomBy(f) { this.zoomAt(f, this.cw / 2, this.ch / 2); }
+  /** Top-left corner of the active page, in document space (0,0 for a notebook page). */
+  origin() {
+    if (this.continuous() && this.offs) return [(this.docW - this.sizeOf(this.cur)[0]) / 2, this.offs[this.cur] || 0];
+    return [0, 0];
+  }
+  pageToScreen(x, y) { const [ox, oy] = this.origin(), v = this.view; return [v.tx + (ox + x) * v.scale, v.ty + (oy + y) * v.scale]; }
   toPage(e) {
     const r = this.stage.getBoundingClientRect();
     return this.screenToPage(e.clientX - r.left, e.clientY - r.top);
   }
-  screenToPage(sx, sy) { return { x: (sx - this.view.tx) / this.view.scale, y: (sy - this.view.ty) / this.view.scale }; }
+  screenToPage(sx, sy) { const [ox, oy] = this.origin(), v = this.view; return { x: (sx - v.tx) / v.scale - ox, y: (sy - v.ty) / v.scale - oy }; }
   clampP(p) { const [w, h] = this.pageDims(); return { x: clamp(p.x, 0, w), y: clamp(p.y, 0, h) }; }
 
-  // ------------------------------------------------------------- PDF raster
-  scheduleRaster() {
-    if (this.kind !== "pdf" || !this.pdf) return;
-    clearTimeout(this.rasterTimer);
-    this.rasterTimer = setTimeout(() => this.ensureRaster(), 120);
+  // ------------------------------------------- continuous PDF: layout of all pages
+  // Every page has a slot in one tall column, so scrolling is smooth and page numbers are exact.
+  // Page sizes are read lazily (20 at a time, a few pages before they are needed); until then a page
+  // takes the size of page 1. Page bitmaps are only made for pages on / next to the screen.
+  layout() {
+    const n = this.pages.length, def = this.defSize(), o = new Float64Array(n + 1);
+    let y = 0, W = 0;
+    for (let i = 0; i < n; i++) { const s = this.sizes[i] || def; o[i] = y; y += s[1] + GAP; if (s[0] > W) W = s[0]; }
+    o[n] = y; this.offs = o; this.docW = W || 595; this.docH = Math.max(1, y - GAP);
   }
-  async ensureRaster() {
-    if (this.kind !== "pdf" || !this.pdf) return;
-    const [w, h] = this.pageDims();
+  relayoutKeep() {                                   // sizes changed: keep the current page where it is on screen
+    const had = this.offs, i = this.vp, before = had ? had[i] : 0;
+    this.layout();
+    if (had) this.view.ty -= (this.offs[i] - before) * this.view.scale;
+    this.clampView(); this.positionEditor();
+  }
+  pageAt(y) {                                        // page whose slot starts at or above document-y
+    const o = this.offs, n = this.pages.length;
+    if (!o || n < 1) return 0;
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (o[mid] <= y) lo = mid; else hi = mid - 1; }
+    return lo;
+  }
+  pageNearest(y) {
+    const i = this.pageAt(y);
+    return i < this.pages.length - 1 && y > this.offs[i] + this.sizeOf(i)[1] + GAP / 2 ? i + 1 : i;
+  }
+  visibleRange() {
+    if (!this.offs) return [0, 0];
+    const s = this.view.scale;
+    return [this.pageAt(-this.view.ty / s), this.pageAt((this.ch - this.view.ty) / s)];
+  }
+  pageVisible(i) { const [lo, hi] = this.visibleRange(); return i >= lo && i <= hi; }
+  syncVp() {                                         // which page is "the current one" while scrolling
+    if (!this.offs) return;
+    let v = this.pageNearest((0.35 * this.ch - this.view.ty) / this.view.scale);
+    const L = this.vpLock;
+    if (L) { if (Math.abs(this.view.ty - L.ty) < 1.5 && Math.abs(this.view.scale - L.s) < 1e-6) v = L.n; else this.vpLock = null; }
+    if (v !== this.vp) this.onVp(v);
+  }
+  onVp(v) {
+    this.vp = v;
+    if ((!this.action || this.action.type === "pan") && this.selected === null && !this.editing) this.setCur(v);
+    this.updatePageUi();
+    this.ensureSizesAround();
+  }
+  updatePageUi() {
+    const n = this.pages.length, has = this.hasPage, v = this.shown();
+    if (document.activeElement !== this.pageInput) this.pageInput.value = has ? v + 1 : "";
+    this.b.prev.disabled = !(has && v > 0); this.b.next.disabled = !(has && v < n - 1);
+  }
+  /** Make page i the page that drawing / editing applies to. */
+  setCur(i) {
+    if (i === this.cur) return false;
+    this.cur = i; this.selected = null; this.live = null; this.preview = null;
+    this.words = null; this.wordsPage = -1;
+    if (this.tool === "hltext") this.ensureWords();
+    return true;
+  }
+  activateAt(sy) {                                   // page under screen-y becomes the active page
+    if (!this.continuous() || !this.offs) return;
+    const i = this.pageNearest((sy - this.view.ty) / this.view.scale);
+    if (this.setCur(i)) this.ui();
+  }
+  scrollToPage(n) {
+    if (!this.offs) return;
+    n = clamp(Math.round(n) || 0, 0, this.pages.length - 1);
+    this.setCur(n); this.vp = n;
+    const margin = this.cw < 500 ? 6 : 14;
+    this.view.ty = margin - this.offs[n] * this.view.scale;
+    this.clampView(); this.positionEditor();
+    this.vpLock = { n, ty: this.view.ty, s: this.view.scale };
+    this.ui(); this.render(); this.scheduleRaster(); this.ensureSizesAround();
+  }
+  ensureWords() {                                    // text boxes of the active page (for the Highlight tool)
+    if (this.kind !== "pdf" || !this.pdf || this.wordsPage === this.cur) return;
+    const i = this.cur, doc = this.pdf.doc;
+    this.wordsPage = i; this.words = null;
+    PDF.pageWords(doc, i).then((w) => { if (this.pdf && this.pdf.doc === doc && this.cur === i) this.words = w; })
+      .catch(() => { if (this.wordsPage === i) this.wordsPage = -1; });
+  }
+  loadSizes(lo, hi) {
+    const doc = this.pdf && this.pdf.doc;
+    if (!doc) return Promise.resolve();
+    const ok = () => this.pdf && this.pdf.doc === doc, jobs = [];
+    for (let i = Math.max(0, lo); i < Math.min(this.pages.length, hi); i++) {
+      if (this.sizes[i]) continue;
+      let j = this.sizeJobs.get(i);
+      if (!j) {
+        j = PDF.pageSize(doc, i).then((s) => { if (ok()) this.sizes[i] = s; })
+          .catch(() => { if (ok()) this.sizes[i] = this.defSize(); })
+          .finally(() => this.sizeJobs.delete(i));
+        this.sizeJobs.set(i, j);
+      }
+      jobs.push(j);
+    }
+    if (!jobs.length) return Promise.resolve();
+    return Promise.all(jobs).then(() => { if (ok()) { this.relayoutKeep(); this.render(); this.scheduleRaster(); } });
+  }
+  ensureSizesAround() {                              // when within 5 pages of the loaded end, read the next 20 sizes
+    if (!this.offs) return;
+    const n = this.pages.length, v = this.vp, [lo, hi] = this.visibleRange();
+    let m = -1;
+    for (let i = v; i <= Math.min(n - 1, v + 5); i++) if (!this.sizes[i]) { m = i; break; }
+    if (m >= 0) this.loadSizes(m, m + 20).catch(() => {});
+    m = -1;
+    for (let i = v - 1; i >= Math.max(0, v - 5); i--) if (!this.sizes[i]) { m = i; break; }
+    if (m >= 0) this.loadSizes(m - 19, m + 1).catch(() => {});
+    this.loadSizes(lo, hi + 1).catch(() => {});
+  }
+  resetDoc() {                                       // called when another PDF is opened / closed
+    this.rasterJob?.cancel(); this.rasterJob = null; clearTimeout(this.rasterTimer); this.stopFling();
+    for (const r of this.rasters.values()) freeCanvas(r.canvas);
+    this.rasters.clear(); this.badPages = new Set(); this.sizeJobs = new Map();
+    this.sizes = []; this.offs = null; this.vp = 0; this.vpLock = null; this.words = null; this.wordsPage = -1;
+  }
+
+  // ----------------------------------------------------- touch momentum scroll
+  stopFling() { if (this.fling) { cancelAnimationFrame(this.fling); this.fling = 0; } }
+  flingFrom(samples) {
+    const now = performance.now(), s = (samples || []).filter((p) => now - p.t < 100);
+    if (s.length < 2) return;
+    const a = s[0], b = s[s.length - 1], dt = b.t - a.t;
+    if (dt < 8) return;
+    const vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt;
+    if (Math.hypot(vx, vy) < 0.15) return;
+    this.startFling(vx, vy);
+  }
+  startFling(vx, vy) {
+    this.stopFling();
+    let last = performance.now();
+    const step = (now) => {
+      const dt = Math.min(50, now - last); last = now;
+      const v = this.view; v.tx += vx * dt; v.ty += vy * dt;
+      const px = v.tx, py = v.ty; this.clampView();
+      if (v.tx !== px) vx = 0;
+      if (v.ty !== py) vy = 0;
+      const k = Math.exp(-dt / 325); vx *= k; vy *= k;
+      this.render(); this.scheduleRaster();
+      this.fling = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0;
+    };
+    this.fling = requestAnimationFrame(step);
+  }
+
+  // ------------------------------------------------------------- PDF page bitmaps
+  wantFor(i) {                                       // bitmap scale for page i at the current zoom
+    const [w, h] = this.sizeOf(i);
     let want = clamp(this.view.scale * this.dpr, 0.5, 6);
     while (w * want * h * want > 14e6 && want > 0.5) want *= 0.9;
-    const r = this.raster;
-    if (r && r.doc === this.pdf.doc && r.page === this.cur && r.scale >= want * 0.9 && r.scale <= want * 2.5) return;
-    this.rasterJob?.cancel();
-    const doc = this.pdf.doc, page = this.cur;
-    const job = this.rasterJob = PDF.renderRaster(doc, page, want);
-    try {
-      const canvas = await job.promise;
-      if (canvas && this.rasterJob === job && this.pdf && this.pdf.doc === doc && this.cur === page) {
-        this.raster = { doc, page, scale: want, canvas }; this.render();
+    return want;
+  }
+  needsRaster(i) {
+    if (this.badPages.has(i)) return false;
+    const r = this.rasters.get(i), want = this.wantFor(i);
+    return !r || r.scale < want * 0.9 || r.scale > want * 2.5;
+  }
+  missingVisible() {
+    const [lo, hi] = this.visibleRange();
+    for (let i = lo; i <= hi; i++) if (!this.rasters.has(i) && !this.badPages.has(i)) return true;
+    return false;
+  }
+  scheduleRaster() {
+    if (this.kind !== "pdf" || !this.pdf || !this.offs) return;
+    clearTimeout(this.rasterTimer);
+    // a page that is on screen with no bitmap yet starts at once; re-sharpening after a zoom waits for it to settle
+    this.rasterTimer = setTimeout(() => this.pumpRaster(), this.missingVisible() ? 0 : 120);
+  }
+  async pumpRaster() {
+    if (this.kind !== "pdf" || !this.pdf || !this.offs) return;
+    this.ensureSizesAround();
+    const doc = this.pdf.doc, n = this.pages.length, [lo, hi] = this.visibleRange(), c = this.vp, wanted = [];
+    let px = 0;
+    for (const r of this.rasters.values()) px += r.canvas.width * r.canvas.height;
+    for (let i = Math.max(0, lo - 1); i <= Math.min(n - 1, hi + 1); i++) {
+      if (!this.needsRaster(i)) continue;
+      if (i < lo || i > hi) {                      // pre-render of a neighbour: only if it fits in the memory budget (else it would be evicted at once)
+        const [w, h] = this.sizeOf(i), want = this.wantFor(i);
+        if (px + w * want * h * want > RASTER_BUDGET || (!this.rasters.has(i) && this.rasters.size >= RASTER_MAX)) continue;
       }
-    } catch (e) { console.error(e); }
+      wanted.push(i);
+    }
+    const vis = (i) => (i >= lo && i <= hi ? 0 : 1);
+    wanted.sort((a, b) => vis(a) - vis(b) || Math.abs(a - c) - Math.abs(b - c));
+    const cur = this.rasterJob;
+    if (cur) {
+      if (wanted.includes(cur.page) && Math.abs(cur.scale / this.wantFor(cur.page) - 1) < 0.1) return;   // still useful: let it finish
+      cur.cancel();
+    }
+    if (!wanted.length) { this.evictRasters(); return; }
+    const i = wanted[0], want = this.wantFor(i), j = PDF.renderRaster(doc, i, want);
+    const job = { page: i, scale: want, cancel: () => j.cancel() };
+    this.rasterJob = job;
+    try {
+      const canvas = await j.promise;
+      if (canvas && this.pdf && this.pdf.doc === doc) {
+        const old = this.rasters.get(i);
+        this.rasters.set(i, { canvas, scale: want });
+        if (old) freeCanvas(old.canvas);
+        this.evictRasters(); this.render();
+      } else if (canvas) freeCanvas(canvas);
+    } catch (e) {
+      if (this.pdf && this.pdf.doc === doc) { console.error(e); this.badPages.add(i); }
+    } finally { if (this.rasterJob === job) this.rasterJob = null; }
+    if (this.pdf && this.pdf.doc === doc) this.pumpRaster();
+  }
+  evictRasters() {                                   // keep memory low: drop bitmaps of pages far from the screen
+    if (!this.offs || !this.pdf) return;
+    const [lo, hi] = this.visibleRange(), c = this.vp, doc = this.pdf.doc;
+    let total = 0;
+    for (const r of this.rasters.values()) total += r.canvas.width * r.canvas.height;
+    const order = [...this.rasters.keys()].filter((i) => i < lo || i > hi).sort((a, b) => Math.abs(b - c) - Math.abs(a - c));
+    for (const i of order) {
+      const r = this.rasters.get(i), far = i < lo - 2 || i > hi + 2;
+      if (!(far || total > RASTER_BUDGET || this.rasters.size > RASTER_MAX)) continue;
+      total -= r.canvas.width * r.canvas.height;
+      freeCanvas(r.canvas); this.rasters.delete(i); PDF.releasePage(doc, i);
+    }
   }
 
   // ----------------------------------------------------------------- drawing
@@ -281,12 +506,12 @@ export class Panel {
     ctx.fillStyle = "#c9ccd1"; ctx.fillRect(0, 0, this.cw, this.ch);
     this.msg.hidden = this.hasPage;
     if (!this.hasPage) return;
+    if (this.continuous()) { this.drawDoc(ctx); return; }
     const [w, h] = this.pageDims(), v = this.view;
     ctx.save();
     ctx.translate(v.tx, v.ty); ctx.scale(v.scale, v.scale);
     ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = 8 / v.scale; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.shadowColor = "transparent";
-    if (this.kind === "nb") R.drawPaper(ctx, w, h, this.pages[this.cur].paper);
-    else if (this.raster && this.raster.doc === this.pdf.doc && this.raster.page === this.cur) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(this.raster.canvas, 0, 0, w, h); }
+    R.drawPaper(ctx, w, h, this.pages[this.cur].paper);
     ctx.save();
     ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
     const list = this.drawList;
@@ -295,6 +520,35 @@ export class Panel {
     ctx.restore();
     if (this.selected !== null && list[this.selected]) this.drawSelection(ctx, list[this.selected]);
     ctx.restore();
+    if (this.selected !== null && list[this.selected] && !this.editing) this.drawHandles(ctx, list[this.selected]);
+  }
+  /** Continuous PDF: draws only the pages that are on screen. */
+  drawDoc(ctx) {
+    if (!this.offs) return;
+    this.syncVp();
+    const v = this.view, s = v.scale, [lo, hi] = this.visibleRange();
+    ctx.save();
+    ctx.translate(v.tx, v.ty); ctx.scale(s, s);
+    for (let i = lo; i <= hi; i++) {
+      const [w, h] = this.sizeOf(i), isCur = i === this.cur;
+      ctx.save();
+      ctx.translate((this.docW - w) / 2, this.offs[i]);
+      ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = 8 / s; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.shadowColor = "transparent";
+      const r = this.rasters.get(i);
+      if (r) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(r.canvas, 0, 0, w, h); }
+      const list = isCur ? this.drawList : this.pages[i].items;
+      if (list.length || (isCur && this.preview)) {
+        ctx.save();
+        ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
+        for (let k = 0; k < list.length; k++) R.drawItem(ctx, list[k], { skipText: isCur && !!this.editing && this.editing.idx === k });
+        if (isCur && this.preview) for (const p of [].concat(this.preview)) R.drawItem(ctx, p);
+        ctx.restore();
+      }
+      if (isCur && this.selected !== null && list[this.selected]) this.drawSelection(ctx, list[this.selected]);
+      ctx.restore();
+    }
+    ctx.restore();
+    const list = this.drawList;
     if (this.selected !== null && list[this.selected] && !this.editing) this.drawHandles(ctx, list[this.selected]);
   }
   geom(i, list = this.drawList) {
@@ -318,7 +572,8 @@ export class Panel {
     const { pos } = this.selInfo(d, this.selected), v = this.view;
     ctx.save(); ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     for (const [x, y] of Object.values(pos)) {
-      ctx.beginPath(); ctx.arc(v.tx + x * v.scale, v.ty + y * v.scale, HANDLE_R, 0, Math.PI * 2);
+      const [hx, hy] = this.pageToScreen(x, y);
+      ctx.beginPath(); ctx.arc(hx, hy, HANDLE_R, 0, Math.PI * 2);
       ctx.fillStyle = "#fff"; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = "#1976d2"; ctx.stroke();
     }
     ctx.restore();
@@ -329,7 +584,7 @@ export class Panel {
     const r = ptype === "touch" ? 24 : 14;
     let best = null, bd = r;
     for (const [name, [x, y]] of Object.entries(pos)) {
-      const d = Math.hypot(v.tx + x * v.scale - sx, v.ty + y * v.scale - sy);
+      const [px, py] = this.pageToScreen(x, y), d = Math.hypot(px - sx, py - sy);
       if (d <= bd) { bd = d; best = name; }
     }
     return best;
@@ -365,7 +620,8 @@ export class Panel {
     this.restoreSnap(state);
     this.selected = null; this.live = null; this.preview = null; this.dirty = true;
     idx = clamp(idx, 0, this.pages.length - 1);
-    if (idx !== this.cur) await this.showPage(idx); else this.render();
+    if (this.continuous()) { this.setCur(idx); if (!this.pageVisible(idx)) this.scrollToPage(idx); this.render(); }
+    else if (idx !== this.cur) await this.showPage(idx); else this.render();
     this.app.onChange(this); this.ui();
   }
 
@@ -374,14 +630,17 @@ export class Panel {
   onWheel(e) {
     e.preventDefault();
     if (!this.hasPage) return;
-    const r = this.stage.getBoundingClientRect();
+    this.stopFling();
+    const r = this.stage.getBoundingClientRect(), k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.ch : 1;
     if (e.ctrlKey || e.metaKey) { this.zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top); return; }
-    this.view.tx -= e.shiftKey ? e.deltaY : e.deltaX; this.view.ty -= e.shiftKey ? 0 : e.deltaY;
-    this.view.fit = this.view.fit && false; this.clampView(); this.positionEditor(); this.render(); this.scheduleRaster();
+    this.view.tx -= (e.shiftKey ? e.deltaY : e.deltaX) * k; this.view.ty -= (e.shiftKey ? 0 : e.deltaY) * k;
+    if (!this.continuous()) this.view.fit = false;
+    this.clampView(); this.positionEditor(); this.render(); this.scheduleRaster();
   }
   local(e) { const r = this.stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
   onDown(e) {
     if (!this.hasPage || e.button > 0) return;
+    this.stopFling();
     const wasEditing = !!this.editing && e.target !== this.ta;
     if (wasEditing) this.finishEdit();
     if (e.target === this.ta) return;
@@ -432,6 +691,11 @@ export class Panel {
   cancelAction() { this.action = null; this.preview = null; this.live = null; this.render(); }
 
   toolDown(e, l) {
+    if (this.continuous() && this.tool !== "pan") {        // the page under the finger/pen becomes the active page
+      const onHandle = this.tool === "select" && this.handleAt(l.x, l.y, e.pointerType);
+      if (!onHandle) this.activateAt(l.y);
+    }
+    if (this.tool === "hltext") this.ensureWords();
     const p = this.toPage(e), t = this.tool;
     if (t === "pan") { this.action = { type: "pan", last: l }; return; }
     if (t === "select") {
@@ -459,7 +723,9 @@ export class Panel {
     const a = this.action;
     if (a.type === "palm" || a.type === "none") return;
     if (a.type === "pan") {
-      this.view.tx += l.x - a.last.x; this.view.ty += l.y - a.last.y; a.last = l; this.view.fit = false;
+      this.view.tx += l.x - a.last.x; this.view.ty += l.y - a.last.y; a.last = l;
+      if (!this.continuous()) this.view.fit = false;
+      (a.samples || (a.samples = [])).push({ t: performance.now(), x: l.x, y: l.y }); if (a.samples.length > 8) a.samples.shift();
       if (a.l0 && Math.hypot(l.x - a.l0.x, l.y - a.l0.y) > 6) a.tap = false;
       this.clampView(); this.render(); this.scheduleRaster(); return;
     }
@@ -494,7 +760,11 @@ export class Panel {
     const a = this.action; this.action = null;
     if (a.type === "palm" || a.type === "none") return;
     const p = this.toPage(e);
-    if (a.type === "pan") { if (a.tap) this.tapSelect(null, l); return; }
+    if (a.type === "pan") {
+      if (a.tap) this.tapSelect(null, l);
+      else if (this.continuous() && e.pointerType === "touch") this.flingFrom(a.samples);
+      return;
+    }
     if (a.type === "stroke") {
       const pts = a.pts.map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]);
       const st = this.curStyle;
@@ -623,14 +893,15 @@ export class Panel {
     if (!this.editing) return;
     const d = this.editing.idx !== null ? this.items[this.editing.idx] : this.editing.proto, v = this.view, ta = this.ta, s = v.scale;
     if (!d) return;
+    const [ox, oy] = this.origin();
     ta.style.fontSize = d.size * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
     if (d.t === "note") {
-      ta.style.left = v.tx + (d.x + 8) * s + "px"; ta.style.top = v.ty + (d.y + M.NOTE_HEADER + 4) * s + "px";
+      ta.style.left = v.tx + (ox + d.x + 8) * s + "px"; ta.style.top = v.ty + (oy + d.y + M.NOTE_HEADER + 4) * s + "px";
       ta.style.width = R.noteTextWidth(d) * s + "px"; ta.style.height = Math.max(40, (d.h - M.NOTE_HEADER - 8)) * s + "px";
       ta.style.color = M.noteTextColor({ color: d.color, bright: M.itemBright(d) }); ta.style.background = "transparent"; ta.classList.add("note");
     } else {
       const L = R.layoutText(R.measureCtx(), ta.value || " ", d.size);
-      ta.style.left = v.tx + (d.x + R.TEXT_PAD) * s + "px"; ta.style.top = v.ty + (d.y + R.TEXT_PAD) * s + "px";
+      ta.style.left = v.tx + (ox + d.x + R.TEXT_PAD) * s + "px"; ta.style.top = v.ty + (oy + d.y + R.TEXT_PAD) * s + "px";
       ta.style.width = Math.max(140, (L.width + d.size) * s) + "px"; ta.style.height = Math.max(L.lh, L.height + 2) * s + "px";
       ta.style.color = M.cssColor(d); ta.style.background = "rgba(255,255,255,0.85)"; ta.classList.remove("note");
     }
@@ -672,6 +943,7 @@ export class Panel {
     c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
     const png = await new Promise((r) => c.toBlob(r, "image/png"));
     const data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.onerror = rej; fr.readAsDataURL(png); });
+    this.activateAt(this.ch / 2);
     const [pw, ph] = this.pageDims();
     let w = c.width * 0.75, h = c.height * 0.75;
     const fit = Math.min(1, 0.6 * pw / w, 0.6 * ph / h);
@@ -689,6 +961,7 @@ export class Panel {
   insertText(text) {
     if (!this.hasPage || !text || !text.trim()) return false;
     this.finishEdit();
+    this.activateAt(this.ch / 2);
     const [pw, ph] = this.pageDims(), ctr = this.screenToPage(this.cw / 2, this.ch / 2), st = this.curStyle;
     const item = { t: "text", x: clamp(ctr.x - 60, 0, pw - 40), y: clamp(ctr.y, 0, ph - 30), text, color: st.color, size: st.size, ...this.styleExtra() };
     this.setTool("select");
@@ -705,24 +978,35 @@ export class Panel {
     if (!this.hasPage) return;
     n = clamp(Math.round(n) || 0, 0, this.pages.length - 1);
     this.finishEdit();
+    if (this.continuous()) {
+      if (!this.offs) return;
+      try { await this.loadSizes(n - 5, n + 20); } catch { /* sizes fall back to page 1's size */ }
+      if (this.pdf) this.scrollToPage(n);
+      return;
+    }
     if (n !== this.cur) await this.showPage(n); else this.ui();
   }
   async showPage(n) {
+    if (this.continuous()) return this.showDoc(n);
     const token = ++this.pageToken;
     this.cur = n; this.selected = null; this.live = null; this.preview = null; this.action = null;
-    if (this.kind === "pdf") {
-      if (!this.sizes[n]) {
-        try { this.sizes[n] = await PDF.pageSize(this.pdf.doc, n); } catch (e) { console.error(e); toast("Could not read this page."); return; }
-        if (token !== this.pageToken) return;
-      }
-      this.words = null;
-      PDF.pageWords(this.pdf.doc, n).then((w) => { if (token === this.pageToken) this.words = w; }).catch(() => {});
-    }
     this.view.fit = true; this.fitView(false);
-    this.raster = null; this.rasterJob?.cancel();
-    this.ui(); this.render(); this.ensureRaster();
+    this.ui(); this.render();
     await R.preloadImages(this.items);
-    this.render();
+    if (token === this.pageToken) this.render();
+  }
+  /** First display of a PDF: read the first page sizes, lay out all pages, show page n at 'fit width'. */
+  async showDoc(n) {
+    const token = ++this.pageToken, doc = this.pdf && this.pdf.doc;
+    this.selected = null; this.live = null; this.preview = null; this.action = null;
+    try { await this.loadSizes(n - 5, n + 20); } catch (e) { console.error(e); toast("Could not read this page."); return; }
+    if (token !== this.pageToken || !this.pdf || this.pdf.doc !== doc) return;
+    if (!this.sizes.some(Boolean)) this.sizes[0] = [595, 842];
+    this.layout();
+    this.cur = this.vp = clamp(n, 0, this.pages.length - 1);
+    this.view.fit = true; this.fitView(false);
+    this.scrollToPage(this.cur);
+    this.ui();
   }
 
   // --------------------------------------------------------------- PDF panel
@@ -733,9 +1017,9 @@ export class Panel {
     let pages = workspace ? workspace.pages : loaded.pages;
     if (workspace && pages.length !== doc.numPages) { await doc.destroy(); toast("The PDF annotations do not match the embedded PDF."); return false; }
     this.finishEdit();
-    this.rasterJob?.cancel();
+    this.resetDoc();
     if (this.pdf) { try { await this.pdf.doc.destroy(); } catch { /* ignore */ } }
-    this.pdf = { doc, source }; this.name = name; this.sizes = []; this.raster = null;
+    this.pdf = { doc, source }; this.name = name;
     this.pages = (pages || Array.from({ length: doc.numPages }, () => [])).map((items) => ({ items: items.slice() }));
     this.history.clear(); this.dirty = false; this.cur = 0;
     await this.showPage(0);
@@ -743,9 +1027,9 @@ export class Panel {
     return true;
   }
   clearPdf() {
-    this.finishEdit(); this.rasterJob?.cancel();
+    this.finishEdit(); this.resetDoc();
     if (this.pdf) this.pdf.doc.destroy().catch(() => {});
-    this.pdf = null; this.name = null; this.pages = []; this.sizes = []; this.raster = null; this.cur = 0;
+    this.pdf = null; this.name = null; this.pages = []; this.cur = 0;
     this.history.clear(); this.dirty = false; this.selected = null;
     this.ui(); this.render();
   }
@@ -831,7 +1115,7 @@ export class Panel {
       try { this.setNotebook(M.parseNotebook(await f.text()), f.name); } catch (e) { toast(e.message, 4000); }
     }
   }
-  viewState() { return { zoom: Math.round(this.view.scale * 1e4) / 1e4, auto_fit: this.view.fit, page: this.cur, bars: this.barsOpen,
+  viewState() { return { zoom: Math.round(this.view.scale * 1e4) / 1e4, auto_fit: this.view.fit, page: this.shown(), bars: this.barsOpen,
     toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent] } }; }
   restoreView(st) {
     if (!st || typeof st !== "object") return;
@@ -846,8 +1130,8 @@ export class Panel {
     if (st.auto_fit === false && Number.isFinite(+st.zoom) && this.hasPage) {
       const [w] = this.pageDims();
       this.view.scale = clamp(+st.zoom, 0.2, 6); this.view.fit = false;
-      this.view.tx = (this.cw - w * this.view.scale) / 2; this.view.ty = 8;
-      this.clampView(); this.scheduleRaster();
+      if (this.continuous() && this.offs) { this.view.tx = (this.cw - this.docW * this.view.scale) / 2; this.scrollToPage(this.vp); }
+      else { this.view.tx = (this.cw - w * this.view.scale) / 2; this.view.ty = 8; this.clampView(); this.scheduleRaster(); }
     } else if (this.hasPage) this.fitView(false);
     this.render();
   }
@@ -864,10 +1148,10 @@ export class Panel {
         el("button", { class: "btn primary big", type: "button", onclick: () => this.pickFile(".pdf,application/pdf") }, icon("open"), "Open PDF"),
         el("p", { class: "muted" }, "or drop a .pdf file here")));
     }
-    this.pageInput.value = has ? this.cur + 1 : ""; this.pageInput.max = n; this.pageCount.textContent = has ? ` / ${n}` : " / 0";
+    this.pageInput.value = has ? this.shown() + 1 : ""; this.pageInput.max = n; this.pageCount.textContent = has ? ` / ${n}` : " / 0";
     const set = (b, on) => { b.disabled = !on; };
     set(this.b.undo, this.history.canUndo()); set(this.b.redo, this.history.canRedo());
-    set(this.b.prev, has && this.cur > 0); set(this.b.next, has && this.cur < n - 1);
+    set(this.b.prev, has && this.shown() > 0); set(this.b.next, has && this.shown() < n - 1);
     set(this.b.zin, has); set(this.b.zout, has); set(this.b.fit, has); this.pageInput.disabled = !has;
     set(this.b.image, has);
     if (this.kind === "pdf") set(this.b.save, has);

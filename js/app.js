@@ -209,12 +209,13 @@ export class App {
     else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); p?.redo(); }
     else if (e.key === "Delete" || e.key === "Backspace") { if (p?.deleteSelected()) e.preventDefault(); }
     else if (e.key === "Escape") { closePopup(); p?.deselect(); }
-    else if (e.altKey && e.key === "ArrowLeft") { p?.goto(p.cur - 1); }
-    else if (e.altKey && e.key === "ArrowRight") { p?.goto(p.cur + 1); }
+    else if (e.altKey && e.key === "ArrowLeft") { p?.goto(p.shown() - 1); }
+    else if (e.altKey && e.key === "ArrowRight") { p?.goto(p.shown() + 1); }
   }
   help() {
     dialog({ title: "DualNote - quick help", content: el("div", { class: "help" },
-      el("p", {}, el("b", {}, "Touch: "), "one finger draws with the chosen tool; two fingers scroll and pinch-zoom. With the Select tool, drag empty space to scroll. While a pen/stylus is in use, finger touches are ignored (palm rejection)."),
+      el("p", {}, el("b", {}, "Touch: "), "one finger draws with the chosen tool; two fingers scroll and pinch-zoom. With the Select or Hand tool, drag to scroll. While a pen/stylus is in use, finger touches are ignored (palm rejection)."),
+      el("p", {}, el("b", {}, "PDF pages: "), "pages are laid out one after another - just scroll (mouse wheel, two fingers, or the Hand tool). The page box jumps to a page number; the arrows move one page."),
       el("p", {}, el("b", {}, "Edit: "), "Select an item to move it or drag the round handles to resize it. Double-tap text and notes to edit. Delete key or the Eraser removes items."),
       el("p", {}, el("b", {}, "Pictures: "), "Press Ctrl+V (or the Paste button) to paste a screenshot, or use the Image button / drag a picture onto a page."),
       el("p", {}, el("b", {}, "Saving: "), "Save workspace keeps the PDF, all annotations and both notebooks in ONE file (also opens in the Windows app). Your session is also kept automatically on this device."),
