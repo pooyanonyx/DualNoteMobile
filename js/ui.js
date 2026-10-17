@@ -101,6 +101,7 @@ let openPopup = null;
 export function closePopup() { openPopup?.close(); }
 /** Show `content` in a floating card next to `anchor`. */
 export function popup(anchor, content, { onClose } = {}) {
+  if (openPopup && openPopup.anchor === anchor) { closePopup(); return null; }   // pressing the same button again closes its popup
   closePopup();
   const card = el("div", { class: "popup" }, content);
   document.body.append(card);
@@ -124,7 +125,7 @@ export function popup(anchor, content, { onClose } = {}) {
     document.removeEventListener("pointerdown", onDown, true); document.removeEventListener("keydown", onKey, true);
     onClose?.();
   }
-  const handle = { close, place, card };
+  const handle = { close, place, card, anchor };
   openPopup = handle;
   return handle;
 }
