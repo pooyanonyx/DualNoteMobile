@@ -1,0 +1,26 @@
+{
+  "name": "dualnote-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DualNote for tablets and phones (installable web app; optional Android APK via Capacitor)",
+  "type": "module",
+  "scripts": {
+    "serve": "python3 -m http.server 8080 --directory www",
+    "test": "node tests/run_all.mjs",
+    "precache": "python3 tools/gen_precache.py",
+    "cap:add": "npx cap add android",
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android"
+  },
+  "devDependencies": {
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.50.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/filesystem": "^6.0.0",
+    "@capacitor/share": "^6.0.0"
+  }
+}

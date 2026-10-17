@@ -1,0 +1,7 @@
+{
+  "appId": "app.dualnote.mobile",
+  "appName": "DualNote",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}
