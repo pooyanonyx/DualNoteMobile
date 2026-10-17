@@ -184,6 +184,8 @@
 "lib/cmaps/UniKS-UTF8-V.bcmap",
 "lib/cmaps/V.bcmap",
 "lib/cmaps/WP-Symbol.bcmap",
+"lib/fonts/LICENSE-Vazirmatn-OFL.txt",
+"lib/fonts/Vazirmatn-Regular.woff2",
 "lib/jszip.min.js",
 "lib/pdf-lib.min.js",
 "lib/pdf.min.mjs",

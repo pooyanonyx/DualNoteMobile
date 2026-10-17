@@ -51,6 +51,11 @@ const ICONS = {
   notebook: P("M6 3h12v18H6z") + P("M9 3v18") + P("M12 8h4M12 12h4"),
   chevdown: P("M6 9l6 6 6-6"),
   close: P("M6 6l12 12M18 6L6 18"),
+  ltr: P("M12.5 3H9a3.5 3.5 0 000 7h3.5M12.5 3v12M16.5 3v12") + P("M4 19h14M15 16l3 3-3 3"),
+  rtl: P("M11.5 3H15a3.5 3.5 0 010 7h-3.5M11.5 3v12M7.5 3v12") + P("M20 19H6M9 16l-3 3 3 3"),
+  alignleft: P("M4 6h16M4 10h10M4 14h16M4 18h10"),
+  aligncenter: P("M4 6h16M7 10h10M4 14h16M7 18h10"),
+  alignright: P("M4 6h16M10 10h10M4 14h16M10 18h10"),
   brush: P("M18 3l3 3-9 9-3-3z") + P("M9 12c-3 0-4 2-4 4s-1 3-2 4c4 1 8-1 8-5"),
 };
 export function icon(name, cls = "") {

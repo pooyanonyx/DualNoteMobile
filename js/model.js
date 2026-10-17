@@ -20,6 +20,9 @@ export const EMBED_SRC = "dualnote_source.pdf";
 export const EMBED_JSON = "dualnote_annotations.json";
 export const LEGACY_ALPHA = { mark: 110, hl: 100 };
 export const MIN_SIZE = 4.0;
+export const TEXT_DIRS = ["ltr", "rtl"];                    // explicit text direction of a text / note item
+export const TEXT_ALIGNS = ["left", "center", "right"];     // explicit alignment (separate from direction)
+export const TEXT_BOX_W = 300.0;                              // default width of a new text box
 export const LAYOUT_KEYS = ["pdf", "pdf2", "nb", "nb2"];
 export const DEFAULT_LAYOUT = ["pdf", "nb"];
 
@@ -102,6 +105,16 @@ function addExtras(d, out) {
   }
   return out;
 }
+// Optional text format: dir + align (both are written together) and, for "text", a fixed box width w.
+// Items without dir keep the old behaviour (direction detected per line), so old files render as before.
+function addFmt(d, out) {
+  if (TEXT_DIRS.includes(d.dir)) {
+    out.dir = d.dir;
+    out.align = TEXT_ALIGNS.includes(d.align) ? d.align : (d.dir === "rtl" ? "right" : "left");
+  }
+  if (out.t === "text" && d.w !== undefined) { try { out.w = Math.max(20, Math.min(4000, round2(num(d.w)))); } catch { /* ignore bad optional value */ } }
+  return out;
+}
 export function sanitizeItem(d) {
   try {
     if (!d || typeof d !== "object") return null;
@@ -120,8 +133,8 @@ export function sanitizeItem(d) {
       return addExtras(d, { t, x1: num(d.x1), y1: num(d.y1), x2: num(d.x2), y2: num(d.y2), color: color(d.color) });
     }
     if (t === "text") {
-      return addExtras(d, { t, x: num(d.x), y: num(d.y), text: str(d.text), color: color(d.color),
-        size: Math.min(400, Math.max(4, num(d.size))) });
+      return addFmt(d, addExtras(d, { t, x: num(d.x), y: num(d.y), text: str(d.text), color: color(d.color),
+        size: Math.min(400, Math.max(4, num(d.size))) }));
     }
     if (t === "image") {
       if (typeof d.data !== "string") return null;
@@ -130,8 +143,8 @@ export function sanitizeItem(d) {
       return addExtras(d, { t, x1: num(d.x1), y1: num(d.y1), x2: num(d.x2), y2: num(d.y2), data: d.data });
     }
     if (t === "note") {
-      return addExtras(d, { t, x: num(d.x), y: num(d.y), w: Math.max(40, num(d.w)), h: Math.max(30, num(d.h)),
-        text: str(d.text), color: color(d.color), size: Math.min(400, Math.max(4, num(d.size))) });
+      return addFmt(d, addExtras(d, { t, x: num(d.x), y: num(d.y), w: Math.max(40, num(d.w)), h: Math.max(30, num(d.h)),
+        text: str(d.text), color: color(d.color), size: Math.min(400, Math.max(4, num(d.size))) }));
     }
   } catch { return null; }
   return null;
@@ -208,6 +221,7 @@ export function bbox(d, textBox = null) {                    // geometry box inc
 }
 export function handleNames(d) {
   if (d.t === "line" || d.t === "arrow") return ["p1", "p2"];
+  if (d.t === "text" && d.w) return ["nw", "ne", "se", "sw", "e", "w"];     // corners scale the text, e / w change the box width
   if (d.t === "image" || d.t === "text") return ["nw", "ne", "se", "sw"];
   return ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 }
@@ -253,6 +267,7 @@ export function resizeItem(d, handle, px, py, textBox = null, e = 0, keepAspect 
     const s = scale ?? 1.0;
     n.size = Math.round(Math.min(400, Math.max(4, d.size * s)) * 10) / 10;
     n.x = round2(x0); n.y = round2(y0);
+    if (d.w) n.w = round2(Math.max(20, scale != null ? d.w * s : x1 - x0));
   }
   return n;
 }

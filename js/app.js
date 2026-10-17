@@ -37,7 +37,9 @@ export class App {
     this.panels = { pdf: new Panel(this, "pdf", "pdf", "PDF"), pdf2: new Panel(this, "pdf2", "pdf", "PDF 2"),
       nb: new Panel(this, "nb", "nb", "Notebook"), nb2: new Panel(this, "nb2", "nb", "Notebook 2") };
     this.autosaveOk = true; this.autosaveTimer = 0; this.wsName = null; this.installEvt = null;
-    setImageLoadedCallback(() => { for (const p of Object.values(this.panels)) p.render(); });   // pictures that finish decoding appear at once
+    setImageLoadedCallback(() => { for (const p of Object.values(this.panels)) p.render(); });
+    // the bundled Persian font is used by the canvas too: redraw once it has loaded
+    document.fonts?.load?.('16px Vazirmatn', "\u067e\u0686\u0698\u06af").then(() => { for (const p of Object.values(this.panels)) p.render(); }).catch(() => {});   // pictures that finish decoding appear at once
     this.buildDom();
     this.refreshLayout();
     window.addEventListener("resize", () => this.refreshLayout());
@@ -299,9 +301,11 @@ export class App {
 
   // ------------------------------------------------------------- autosave
   scheduleAutosave() { clearTimeout(this.autosaveTimer); this.autosaveTimer = setTimeout(() => this.autosave(), 2500); }
-  flushAutosave() { if (this.autosaveTimer) { clearTimeout(this.autosaveTimer); this.autosave(); } }
-  async autosave() {
+  flushAutosave() { if (this.autosaveTimer) { clearTimeout(this.autosaveTimer); this.autosave(true); } }
+  async autosave(force = false) {
     this.autosaveTimer = 0;
+    // collecting the data closes any open text editor: never do that in the middle of typing (wait until the user is done)
+    if (!force && Object.values(this.panels).some((p) => p.editing)) { this.scheduleAutosave(); return; }
     try {
       const d = this.collect(), rec = { version: 1, saved: Date.now(), settings: d.settings, notebook: d.notebook, notebook2: d.notebook2 };
       const keep = new Set();

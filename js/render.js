@@ -2,7 +2,8 @@
 // so what you see is what you export. Units are page points (1 pt = 1 user unit of the canvas).
 import * as M from "./model.js";
 
-export const FONT_STACK = '"Segoe UI", Roboto, "Noto Sans", "Noto Naskh Arabic", Vazirmatn, Tahoma, sans-serif';
+// Vazirmatn (bundled, see css/app.css) covers the Arabic script block so Persian looks the same on every device.
+export const FONT_STACK = 'Vazirmatn, "Segoe UI", Roboto, "Noto Sans", "Noto Naskh Arabic", Tahoma, sans-serif';
 const RTL_RE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
 const LTR_RE = /[A-Za-z]/;
 export const TEXT_PAD = 4;
@@ -18,11 +19,23 @@ export function measureCtx() {
   if (!_mctx) _mctx = document.createElement("canvas").getContext("2d");
   return _mctx;
 }
-/** Break text into lines. maxWidth = null: only explicit newlines. */
-export function layoutText(ctx, text, size, maxWidth = null) {
+/** Explicit {dir, align} of a text / note item, or null for old items (direction then detected per line). */
+export function fmtOf(d) {
+  if (d.dir !== "rtl" && d.dir !== "ltr") return null;
+  return { dir: d.dir, align: d.align === "center" || d.align === "right" || d.align === "left" ? d.align : (d.dir === "rtl" ? "right" : "left") };
+}
+/** What the format buttons show for an item: its explicit format, or the one implied by its first strong letter. */
+export function effectiveFmt(d) {
+  const f = fmtOf(d);
+  if (f) return f;
+  const rtl = isRtl(String(d.text || ""));
+  return { dir: rtl ? "rtl" : "ltr", align: rtl ? "right" : "left" };
+}
+/** Break text into lines. maxWidth = null: only explicit newlines. fmt: explicit {dir, align} or null. */
+export function layoutText(ctx, text, size, maxWidth = null, fmt = null) {
   ctx.font = `${size}px ${FONT_STACK}`;
   const lh = size * 1.25, lines = [];
-  const push = (s) => lines.push({ text: s, w: ctx.measureText(s).width, rtl: isRtl(s) });
+  const push = (s) => lines.push({ text: s, w: ctx.measureText(s).width, rtl: fmt ? fmt.dir === "rtl" : isRtl(s) });
   for (const para of String(text).split("\n")) {
     if (maxWidth == null) { push(para); continue; }
     let cur = "";
@@ -35,15 +48,17 @@ export function layoutText(ctx, text, size, maxWidth = null) {
   }
   return { lines, lh, width: Math.max(0, ...lines.map((l) => l.w)), height: lines.length * lh };
 }
+/** Width available for the lines of a text item with a fixed box width (null = unlimited, old behaviour). */
+export function textInnerWidth(d) { return d.w ? Math.max(10, d.w - 2 * TEXT_PAD) : null; }
 /** [x0, y0, x1, y1] of a text item (including its padding). */
 export function textBox(d) {
-  const L = layoutText(measureCtx(), d.text, d.size);
-  return [d.x, d.y, d.x + L.width + 2 * TEXT_PAD, d.y + L.height + 2 * TEXT_PAD];
+  const mw = textInnerWidth(d), L = layoutText(measureCtx(), d.text, d.size, mw, fmtOf(d));
+  return [d.x, d.y, d.x + (mw ? mw : L.width) + 2 * TEXT_PAD, d.y + L.height + 2 * TEXT_PAD];
 }
 export function noteTextWidth(d) { return Math.max(20, d.w - 16); }
 /** Height a note needs to show all its text. */
 export function noteNeededHeight(d, text = d.text) {
-  const L = layoutText(measureCtx(), text, d.size, noteTextWidth(d));
+  const L = layoutText(measureCtx(), text, d.size, noteTextWidth(d), fmtOf(d));
   return L.height + M.NOTE_HEADER + 12;
 }
 
@@ -130,14 +145,19 @@ export function drawPaper(ctx, w, h, kind) {
 }
 
 // -------------------------------------------------------------------- text
-function drawTextLines(ctx, L, x, y, blockWidth, size, fill) {
+// Lines are drawn with the browser's own text engine (canvas fillText): it shapes Persian/Arabic letters and runs the
+// Unicode bidi algorithm using ctx.direction as the paragraph direction. Alignment is physical (left/center/right), so
+// direction and alignment are independent. fmt = null: old items (per-line detected direction, RTL lines right-aligned).
+function drawTextLines(ctx, L, x, y, blockWidth, size, fill, fmt = null) {
   ctx.font = `${size}px ${FONT_STACK}`;
   ctx.textBaseline = "top";
   ctx.fillStyle = fill;
   L.lines.forEach((ln, i) => {
     const ly = y + i * L.lh + (L.lh - size) / 2;
-    if (ln.rtl) { ctx.direction = "rtl"; ctx.textAlign = "right"; ctx.fillText(ln.text, x + blockWidth, ly); }
-    else { ctx.direction = "ltr"; ctx.textAlign = "left"; ctx.fillText(ln.text, x, ly); }
+    const align = fmt ? fmt.align : (ln.rtl ? "right" : "left");
+    ctx.direction = ln.rtl ? "rtl" : "ltr"; ctx.textAlign = align;
+    const ax = align === "right" ? x + blockWidth : align === "center" ? x + blockWidth / 2 : x;
+    ctx.fillText(ln.text, ax, ly);
   });
   ctx.direction = "ltr"; ctx.textAlign = "left";
 }
@@ -162,8 +182,8 @@ function drawNote(ctx, d, skipText) {
   ctx.strokeStyle = mixCss(d.color, bright - 26); ctx.lineWidth = 0.6; ctx.strokeRect(0, 0, w, h);
   if (!skipText) {
     ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
-    const bw = noteTextWidth(d), L = layoutText(ctx, d.text, d.size, bw);
-    drawTextLines(ctx, L, 8, hd + 4, bw, d.size, M.noteTextColor({ color: d.color, bright }));
+    const bw = noteTextWidth(d), fmt = fmtOf(d), L = layoutText(ctx, d.text, d.size, bw, fmt);
+    drawTextLines(ctx, L, 8, hd + 4, bw, d.size, M.noteTextColor({ color: d.color, bright }), fmt);
   }
   ctx.restore();
 }
@@ -195,8 +215,8 @@ export function drawItem(ctx, d, opts = {}) {
     ctx.fillRect(Math.min(d.x1, d.x2), Math.min(d.y1, d.y2), Math.abs(d.x2 - d.x1), Math.abs(d.y2 - d.y1));
   } else if (t === "text") {
     if (!opts.skipText) {
-      const L = layoutText(ctx, d.text, d.size);
-      drawTextLines(ctx, L, d.x + TEXT_PAD, d.y + TEXT_PAD, L.width, d.size, M.cssColor(d));
+      const mw = textInnerWidth(d), fmt = fmtOf(d), L = layoutText(ctx, d.text, d.size, mw, fmt);
+      drawTextLines(ctx, L, d.x + TEXT_PAD, d.y + TEXT_PAD, mw ? mw : L.width, d.size, M.cssColor(d), fmt);
     }
   } else if (t === "note") {
     drawNote(ctx, d, opts.skipText);

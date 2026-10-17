@@ -51,6 +51,8 @@ export class Panel {
     // continuous PDF view: page layout + cached page bitmaps (only pages near the screen are rendered)
     this.rasters = new Map(); this.rasterJob = null; this.rasterTimer = 0; this.badPages = new Set();
     this.sizeJobs = new Map(); this.offs = null; this.docW = 595; this.docH = 842; this.vp = 0; this.vpLock = null; this.fling = 0;
+    this.fmt = { dir: "ltr", align: "left" }; this.fmtKey = "";      // text direction / alignment used for new text
+    if (kind === "nb") { this.layout(); this.view.ty = 14; }
     this._raf = 0; this.barsOpen = true;
     this.buildDom();
     this.setTool("pen", true);
@@ -64,10 +66,10 @@ export class Panel {
   get drawList() { return this.live ?? this.items; }
   get hasPage() { return this.kind === "nb" || !!this.pdf; }
   pageDims() { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : this.sizeOf(this.cur); }
-  continuous() { return this.kind === "pdf"; }                       // PDFs scroll continuously; notebooks are paged
+  continuous() { return true; }                                      // PDF and notebook share one continuous page column
   shown() { return this.continuous() ? this.vp : this.cur; }         // page number shown in the toolbar
   defSize() { return this.sizes[0] || this.sizes.find(Boolean) || [595, 842]; }
-  sizeOf(i) { return this.sizes[i] || this.defSize(); }
+  sizeOf(i) { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : (this.sizes[i] || this.defSize()); }
   snap() { return this.pages.map((p) => ({ paper: p.paper, items: p.items.slice() })); }
   restoreSnap(s) { this.pages = s.map((p) => (this.kind === "nb" ? { paper: p.paper, items: p.items.slice() } : { items: p.items.slice() })); }
 
@@ -134,7 +136,19 @@ export class Panel {
       el("span", { class: "cdot" }), el("span", { class: "lbl" }, "Color"), icon("chevdown", "tiny"));
     this.brushBtn = el("button", { class: "btn", type: "button", title: "Thickness, opacity, brightness, text size", onclick: () => this.openBrush() },
       icon("brush"), el("span", { class: "lbl" }, "Brush"), icon("chevdown", "tiny"));
-    toolBar.append(el("span", { class: "gap" }), this.colorBtn, this.brushBtn);
+    const fb = (ic, title, fn) => el("button", { class: "btn tool fmt", type: "button", title, "aria-label": title, "aria-pressed": "false", onclick: fn }, icon(ic));
+    this.fmtBtns = {
+      ltr: fb("ltr", "Text direction: left-to-right (English)", () => this.setFmt({ dir: "ltr" })),
+      rtl: fb("rtl", "Text direction: right-to-left (Persian)", () => this.setFmt({ dir: "rtl" })),
+      left: fb("alignleft", "Align text to the left", () => this.setFmt({ align: "left" })),
+      center: fb("aligncenter", "Center text", () => this.setFmt({ align: "center" })),
+      right: fb("alignright", "Align text to the right", () => this.setFmt({ align: "right" })),
+    };
+    const F = this.fmtBtns;
+    this.fmtGroup = el("span", { class: "fmtgrp", role: "group", "aria-label": "Text direction and alignment", hidden: true },
+      F.ltr, F.rtl, el("span", { class: "fsep" }), F.left, F.center, F.right);
+    for (const ev of ["pointerdown", "mousedown"]) this.fmtGroup.addEventListener(ev, (e) => e.preventDefault());   // keep the text cursor in the editor
+    toolBar.append(this.fmtGroup, el("span", { class: "gap" }), this.colorBtn, this.brushBtn);
 
     this.bars = el("div", { class: "bars" }, fileBar, pageBar, toolBar);
 
@@ -145,7 +159,8 @@ export class Panel {
       onkeydown: (e) => { if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); this.finishEdit(); } e.stopPropagation(); } });
     this.msg = el("div", { class: "msg" });
     this.stage = el("div", { class: "stage", tabIndex: -1 }, this.canvas, this.ta, this.msg);
-    this.root = el("section", { class: "panel", dataset: { key: this.key, kind: this.kind } }, head, this.bars, this.stage, this.fileInput, this.imgInput);
+    this.body = el("div", { class: "pbody" }, this.stage, this.bars);    // bars overlay the stage (position:absolute), they take no layout space
+    this.root = el("section", { class: "panel", dataset: { key: this.key, kind: this.kind } }, head, this.body, this.fileInput, this.imgInput);
 
     const s = this.stage;
     s.addEventListener("pointerdown", (e) => this.onDown(e));
@@ -162,8 +177,7 @@ export class Panel {
   setBars(open) {
     this.barsOpen = open;
     this.bars.hidden = !open;
-    this.barsBtn.textContent = open ? "Toolbars ▾" : "Toolbars ▸";
-    this.onResize();
+    this.barsBtn.textContent = open ? "Toolbars ▾" : "Toolbars ▸";   // the bars float over the page area: nothing is resized or moved
   }
 
   // ------------------------------------------------------------------- tools
@@ -281,9 +295,9 @@ export class Panel {
   // Page sizes are read lazily (20 at a time, a few pages before they are needed); until then a page
   // takes the size of page 1. Page bitmaps are only made for pages on / next to the screen.
   layout() {
-    const n = this.pages.length, def = this.defSize(), o = new Float64Array(n + 1);
+    const n = this.pages.length, o = new Float64Array(n + 1);
     let y = 0, W = 0;
-    for (let i = 0; i < n; i++) { const s = this.sizes[i] || def; o[i] = y; y += s[1] + GAP; if (s[0] > W) W = s[0]; }
+    for (let i = 0; i < n; i++) { const s = this.sizeOf(i); o[i] = y; y += s[1] + GAP; if (s[0] > W) W = s[0]; }
     o[n] = y; this.offs = o; this.docW = W || 595; this.docH = Math.max(1, y - GAP);
   }
   relayoutKeep() {                                   // sizes changed: keep the current page where it is on screen
@@ -326,6 +340,10 @@ export class Panel {
     const n = this.pages.length, has = this.hasPage, v = this.shown();
     if (document.activeElement !== this.pageInput) this.pageInput.value = has ? v + 1 : "";
     this.b.prev.disabled = !(has && v > 0); this.b.next.disabled = !(has && v < n - 1);
+    if (this.kind === "nb") {
+      this.b.earlier.disabled = !(has && v > 0); this.b.later.disabled = !(has && v < n - 1);
+      this.paper.value = this.pages[v]?.paper || "lined";
+    }
   }
   /** Make page i the page that drawing / editing applies to. */
   setCur(i) {
@@ -376,7 +394,7 @@ export class Panel {
     return Promise.all(jobs).then(() => { if (ok()) { this.relayoutKeep(); this.render(); this.scheduleRaster(); } });
   }
   ensureSizesAround() {                              // when within 5 pages of the loaded end, read the next 20 sizes
-    if (!this.offs) return;
+    if (!this.offs || this.kind !== "pdf") return;
     const n = this.pages.length, v = this.vp, [lo, hi] = this.visibleRange();
     let m = -1;
     for (let i = v; i <= Math.min(n - 1, v + 5); i++) if (!this.sizes[i]) { m = i; break; }
@@ -504,25 +522,12 @@ export class Panel {
     const ctx = this.ctx, d = this.dpr;
     ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.fillStyle = "#c9ccd1"; ctx.fillRect(0, 0, this.cw, this.ch);
+    this.updateFmtUi();
     this.msg.hidden = this.hasPage;
     if (!this.hasPage) return;
-    if (this.continuous()) { this.drawDoc(ctx); return; }
-    const [w, h] = this.pageDims(), v = this.view;
-    ctx.save();
-    ctx.translate(v.tx, v.ty); ctx.scale(v.scale, v.scale);
-    ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = 8 / v.scale; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.shadowColor = "transparent";
-    R.drawPaper(ctx, w, h, this.pages[this.cur].paper);
-    ctx.save();
-    ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
-    const list = this.drawList;
-    for (let i = 0; i < list.length; i++) R.drawItem(ctx, list[i], { skipText: !!this.editing && this.editing.idx === i });
-    if (this.preview) for (const p of [].concat(this.preview)) R.drawItem(ctx, p);
-    ctx.restore();
-    if (this.selected !== null && list[this.selected]) this.drawSelection(ctx, list[this.selected]);
-    ctx.restore();
-    if (this.selected !== null && list[this.selected] && !this.editing) this.drawHandles(ctx, list[this.selected]);
+    this.drawDoc(ctx);
   }
-  /** Continuous PDF: draws only the pages that are on screen. */
+  /** Continuous view (PDF and notebook): draws only the pages that are on screen. */
   drawDoc(ctx) {
     if (!this.offs) return;
     this.syncVp();
@@ -534,8 +539,8 @@ export class Panel {
       ctx.save();
       ctx.translate((this.docW - w) / 2, this.offs[i]);
       ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = 8 / s; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.shadowColor = "transparent";
-      const r = this.rasters.get(i);
-      if (r) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(r.canvas, 0, 0, w, h); }
+      if (this.kind === "nb") R.drawPaper(ctx, w, h, this.pages[i].paper);
+      else { const r = this.rasters.get(i); if (r) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(r.canvas, 0, 0, w, h); } }
       const list = isCur ? this.drawList : this.pages[i].items;
       if (list.length || (isCur && this.preview)) {
         ctx.save();
@@ -620,8 +625,10 @@ export class Panel {
     this.restoreSnap(state);
     this.selected = null; this.live = null; this.preview = null; this.dirty = true;
     idx = clamp(idx, 0, this.pages.length - 1);
-    if (this.continuous()) { this.setCur(idx); if (!this.pageVisible(idx)) this.scrollToPage(idx); this.render(); }
-    else if (idx !== this.cur) await this.showPage(idx); else this.render();
+    if (this.kind === "nb") { this.layout(); this.vp = clamp(this.vp, 0, this.pages.length - 1); this.clampView(); }   // pages may have been added / removed
+    this.setCur(idx);
+    if (!this.pageVisible(idx)) this.scrollToPage(idx); else this.ui();
+    this.render();
     this.app.onChange(this); this.ui();
   }
 
@@ -827,10 +834,13 @@ export class Panel {
     const t = this.tool, idx = this.hit(p), [w, h] = this.pageDims(), st = this.curStyle;
     if (idx !== null && this.items[idx].t === t) { this.selected = idx; this.startEdit(idx); return; }
     if (t === "text") {
-      const proto = { t: "text", x: clamp(p.x, 0, w - 10), y: clamp(p.y - st.size * 0.7, 0, h - 10), text: "", color: st.color, size: st.size, ...this.styleExtra() };
+      const bw = Math.min(M.TEXT_BOX_W, w - 8), f = this.fmt;     // new text is a box of fixed width, so alignment is visible; RTL boxes grow leftwards from the tap
+      const proto = { t: "text", x: clamp(f.dir === "rtl" ? p.x - bw : p.x, 4, w - bw - 4), y: clamp(p.y - st.size * 0.7, 0, h - 10), w: bw, dir: f.dir, align: f.align,
+        text: "", color: st.color, size: st.size, ...this.styleExtra() };
       this.startEdit(null, proto);
     } else {
-      const proto = { t: "note", x: clamp(p.x, 0, w - M.NOTE_W), y: clamp(p.y, 0, h - M.NOTE_H), w: M.NOTE_W, h: M.NOTE_H, text: "", color: st.color, size: st.size, ...this.styleExtra() };
+      const proto = { t: "note", x: clamp(p.x, 0, w - M.NOTE_W), y: clamp(p.y, 0, h - M.NOTE_H), w: M.NOTE_W, h: M.NOTE_H, dir: this.fmt.dir, align: this.fmt.align,
+        text: "", color: st.color, size: st.size, ...this.styleExtra() };
       this.startEdit(null, proto);
     }
   }
@@ -876,11 +886,50 @@ export class Panel {
     return [...lines.values()].map((r) => r.map((v) => Math.round(v * 100) / 100));
   }
 
+  // ------------------------------------------------- text direction / alignment
+  // dir (ltr|rtl) and align (left|center|right) are separate item properties. Old items without them keep the previous
+  // behaviour (direction detected per line). this.fmt is what NEW text gets; it only changes when the user presses a button.
+  textTarget() {                                     // the text / note the format buttons act on
+    if (this.editing) return this.editing.idx !== null ? this.items[this.editing.idx] : this.editing.proto;
+    if (this.tool === "select" && this.selected !== null) { const d = this.items[this.selected]; if (d && (d.t === "text" || d.t === "note")) return d; }
+    return null;
+  }
+  displayFmt() {
+    const d = this.textTarget();
+    if (this.editing && this.editing.fmt) return this.editing.fmt;
+    return d ? R.effectiveFmt(d) : this.fmt;
+  }
+  updateFmtUi() {
+    const show = !!this.textTarget() || this.tool === "text" || this.tool === "note";
+    const f = show ? this.displayFmt() : null, key = f ? f.dir + "|" + f.align : "";
+    if (key === this.fmtKey) return;
+    this.fmtKey = key; this.fmtGroup.hidden = !show;
+    if (!f) return;
+    const on = { ltr: f.dir === "ltr", rtl: f.dir === "rtl", left: f.align === "left", center: f.align === "center", right: f.align === "right" };
+    for (const [k, b] of Object.entries(this.fmtBtns)) { b.classList.toggle("on", on[k]); b.setAttribute("aria-pressed", String(on[k])); }
+  }
+  setFmt(patch) {
+    this.fmt = { ...this.fmt, ...patch };            // an explicit choice also becomes the default for new text
+    const ed = this.editing;
+    if (ed) {
+      const d = ed.idx !== null ? this.items[ed.idx] : ed.proto;
+      ed.fmt = { ...(ed.fmt || R.effectiveFmt(d)), ...patch };
+      this.positionEditor(); this.ta.focus({ preventScroll: true });
+    } else {
+      const d = this.textTarget();
+      if (d) {
+        const f = { ...R.effectiveFmt(d), ...patch };
+        if (f.dir !== d.dir || f.align !== d.align) { const items = this.items.slice(); items[this.selected] = { ...d, ...f }; this.commit(items, { keepSel: true }); }
+      }
+    }
+    this.fmtKey = ""; this.updateFmtUi(); this.render();
+  }
+
   // --------------------------------------------------------------- text edit
   startEdit(idx, proto = null) {
     this.finishEdit();
     const d = idx !== null ? this.items[idx] : proto;
-    this.editing = { idx, proto };
+    this.editing = { idx, proto, fmt: null };
     this.ta.value = d.text || "";
     this.ta.hidden = false;
     this.editingItem = d;
@@ -894,15 +943,18 @@ export class Panel {
     const d = this.editing.idx !== null ? this.items[this.editing.idx] : this.editing.proto, v = this.view, ta = this.ta, s = v.scale;
     if (!d) return;
     const [ox, oy] = this.origin();
+    const f = this.editing.fmt || R.fmtOf(d);          // explicit format, or null = old item (direction auto-detected)
+    ta.dir = f ? f.dir : "auto"; ta.style.textAlign = f ? f.align : "start";   // the browser's own bidi / shaping / caret handling
     ta.style.fontSize = d.size * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
     if (d.t === "note") {
       ta.style.left = v.tx + (ox + d.x + 8) * s + "px"; ta.style.top = v.ty + (oy + d.y + M.NOTE_HEADER + 4) * s + "px";
       ta.style.width = R.noteTextWidth(d) * s + "px"; ta.style.height = Math.max(40, (d.h - M.NOTE_HEADER - 8)) * s + "px";
       ta.style.color = M.noteTextColor({ color: d.color, bright: M.itemBright(d) }); ta.style.background = "transparent"; ta.classList.add("note");
     } else {
-      const L = R.layoutText(R.measureCtx(), ta.value || " ", d.size);
+      const mw = R.textInnerWidth(d), L = R.layoutText(R.measureCtx(), ta.value || " ", d.size, mw, f);
       ta.style.left = v.tx + (ox + d.x + R.TEXT_PAD) * s + "px"; ta.style.top = v.ty + (oy + d.y + R.TEXT_PAD) * s + "px";
-      ta.style.width = Math.max(140, (L.width + d.size) * s) + "px"; ta.style.height = Math.max(L.lh, L.height + 2) * s + "px";
+      ta.style.width = (mw ? mw : Math.max(140, L.width + d.size)) * s + "px"; ta.style.height = Math.max(L.lh, L.height + 2) * s + "px";
+      if (mw && ta.scrollHeight > ta.clientHeight) ta.style.height = ta.scrollHeight + "px";
       ta.style.color = M.cssColor(d); ta.style.background = "rgba(255,255,255,0.85)"; ta.classList.remove("note");
     }
   }
@@ -914,7 +966,7 @@ export class Panel {
     this.ta.hidden = true;
     if (ed.idx === null) {
       if (text.trim()) {
-        const d = { ...ed.proto, text };
+        const d = { ...ed.proto, text, ...(ed.fmt || {}) };
         if (d.t === "note") d.h = Math.round(Math.max(d.h, R.noteNeededHeight(d, text)) * 100) / 100;
         this.commit([...this.items, d]);
       } else this.render();
@@ -924,9 +976,10 @@ export class Panel {
     if (!old) { this.render(); return; }
     const items = this.items.slice();
     if (old.t === "text" && !text.trim()) { items.splice(ed.idx, 1); this.commit(items); return; }
-    if (text !== old.text) {
-      const d = { ...old, text };
-      if (old.t === "note") d.h = Math.round(Math.max(old.h, R.noteNeededHeight(old, text)) * 100) / 100;
+    const fmtChanged = !!ed.fmt && (ed.fmt.dir !== old.dir || ed.fmt.align !== old.align);
+    if (text !== old.text || fmtChanged) {
+      const d = { ...old, text, ...(ed.fmt || {}) };
+      if (old.t === "note") d.h = Math.round(Math.max(old.h, R.noteNeededHeight(d, text)) * 100) / 100;
       items[ed.idx] = d; this.commit(items, { keepSel: true });
     } else this.render();
   }
@@ -963,7 +1016,8 @@ export class Panel {
     this.finishEdit();
     this.activateAt(this.ch / 2);
     const [pw, ph] = this.pageDims(), ctr = this.screenToPage(this.cw / 2, this.ch / 2), st = this.curStyle;
-    const item = { t: "text", x: clamp(ctr.x - 60, 0, pw - 40), y: clamp(ctr.y, 0, ph - 30), text, color: st.color, size: st.size, ...this.styleExtra() };
+    const bw = Math.min(M.TEXT_BOX_W, pw - 8), f = this.fmt;
+    const item = { t: "text", x: clamp(ctr.x - bw / 2, 4, pw - bw - 4), y: clamp(ctr.y, 0, ph - 30), w: bw, dir: f.dir, align: f.align, text, color: st.color, size: st.size, ...this.styleExtra() };
     this.setTool("select");
     this.commit([...this.items, item], { select: this.items.length });
     return true;
@@ -975,33 +1029,22 @@ export class Panel {
 
   // ----------------------------------------------------------------- pages
   async goto(n) {
-    if (!this.hasPage) return;
+    if (!this.hasPage || !this.offs) return;
     n = clamp(Math.round(n) || 0, 0, this.pages.length - 1);
     this.finishEdit();
-    if (this.continuous()) {
-      if (!this.offs) return;
-      try { await this.loadSizes(n - 5, n + 20); } catch { /* sizes fall back to page 1's size */ }
-      if (this.pdf) this.scrollToPage(n);
-      return;
-    }
-    if (n !== this.cur) await this.showPage(n); else this.ui();
+    try { await this.loadSizes(n - 5, n + 20); } catch { /* sizes fall back to page 1's size */ }
+    if (this.hasPage) this.scrollToPage(n);
   }
-  async showPage(n) {
-    if (this.continuous()) return this.showDoc(n);
-    const token = ++this.pageToken;
-    this.cur = n; this.selected = null; this.live = null; this.preview = null; this.action = null;
-    this.view.fit = true; this.fitView(false);
-    this.ui(); this.render();
-    await R.preloadImages(this.items);
-    if (token === this.pageToken) this.render();
-  }
-  /** First display of a PDF: read the first page sizes, lay out all pages, show page n at 'fit width'. */
+  showPage(n) { return this.showDoc(n); }
+  /** First display of a document: read the first page sizes (PDF), lay out all pages, show page n at 'fit width'. */
   async showDoc(n) {
     const token = ++this.pageToken, doc = this.pdf && this.pdf.doc;
     this.selected = null; this.live = null; this.preview = null; this.action = null;
-    try { await this.loadSizes(n - 5, n + 20); } catch (e) { console.error(e); toast("Could not read this page."); return; }
-    if (token !== this.pageToken || !this.pdf || this.pdf.doc !== doc) return;
-    if (!this.sizes.some(Boolean)) this.sizes[0] = [595, 842];
+    if (this.kind === "pdf") {
+      try { await this.loadSizes(n - 5, n + 20); } catch (e) { console.error(e); toast("Could not read this page."); return; }
+      if (token !== this.pageToken || !this.pdf || this.pdf.doc !== doc) return;
+      if (!this.sizes.some(Boolean)) this.sizes[0] = [595, 842];
+    }
     this.layout();
     this.cur = this.vp = clamp(n, 0, this.pages.length - 1);
     this.view.fit = true; this.fitView(false);
@@ -1064,16 +1107,21 @@ export class Panel {
     this.showPage(0);
     this.app.onChange(this, { clean: true });
   }
-  structural(mutate) {
+  /** Page-structure change (add / delete / move / paper). Applies to the page being viewed; the page column is laid out again. */
+  structural(mutate, { scroll = true } = {}) {
     this.finishEdit();
+    if (this.vp !== this.cur) this.setCur(this.vp);
     this.history.push(this.snap(), this.cur);
     mutate();
+    this.selected = null; this.live = null; this.preview = null;
     this.dirty = true; this.app.onChange(this);
-    this.showPage(this.cur);
+    this.layout();
+    if (scroll) this.scrollToPage(this.cur); else { this.clampView(); this.ui(); this.render(); }
   }
-  addPage() { this.structural(() => { this.pages.splice(this.cur + 1, 0, { paper: this.pages[this.cur].paper, items: [] }); this.cur++; }); }
+  addPage() { this.structural(() => { this.pages.splice(this.cur + 1, 0, { paper: this.pages[this.cur].paper, items: [] }); this.cur++; }); }   // new page goes directly below the current one
   async deletePage() {
     if (this.pages.length <= 1) { toast("A notebook needs at least one page."); return; }
+    if (this.vp !== this.cur) this.setCur(this.vp);
     if (this.items.length) {
       const ok = await dialog({ title: "Delete page", content: `Delete page ${this.cur + 1} and everything on it? (You can undo this.)`,
         buttons: [{ label: "Cancel", value: false }, { label: "Delete", value: true, primary: true, danger: true }] });
@@ -1082,11 +1130,15 @@ export class Panel {
     this.structural(() => { this.pages.splice(this.cur, 1); this.cur = Math.min(this.cur, this.pages.length - 1); });
   }
   movePage(step) {
+    if (this.vp !== this.cur) this.setCur(this.vp);
     const j = this.cur + step;
     if (j < 0 || j >= this.pages.length) return;
     this.structural(() => { [this.pages[this.cur], this.pages[j]] = [this.pages[j], this.pages[this.cur]]; this.cur = j; });
   }
-  setPaper(kind) { if (kind !== this.pages[this.cur].paper) this.structural(() => { this.pages[this.cur].paper = kind; }); }
+  setPaper(kind) {
+    if (this.vp !== this.cur) this.setCur(this.vp);
+    if (kind !== this.pages[this.cur].paper) this.structural(() => { this.pages[this.cur].paper = kind; }, { scroll: false });
+  }
   async saveNotebook() {
     this.finishEdit();
     const base = (this.name || "notebook").replace(/\.dnote$/i, "");
@@ -1116,13 +1168,15 @@ export class Panel {
     }
   }
   viewState() { return { zoom: Math.round(this.view.scale * 1e4) / 1e4, auto_fit: this.view.fit, page: this.shown(), bars: this.barsOpen,
-    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent] } }; }
+    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt } } }; }
   restoreView(st) {
     if (!st || typeof st !== "object") return;
     const tb = st.toolbar;
     if (tb && typeof tb === "object") {
       if (tb.groups && typeof tb.groups === "object") for (const k of Object.keys(this.groups)) this.groups[k] = M.sanitizeStyle(tb.groups[k], this.groups[k]);
       if (Array.isArray(tb.recent)) this.recent = tb.recent.map((c) => { const p = typeof c === "string" ? M.parseHex(c) : null; return p ? M.toHex(...p) : null; }).filter(Boolean).slice(0, 10);
+      const tf = tb.text_format;
+      if (tf && typeof tf === "object") this.fmt = { dir: M.TEXT_DIRS.includes(tf.dir) ? tf.dir : this.fmt.dir, align: M.TEXT_ALIGNS.includes(tf.align) ? tf.align : this.fmt.align };
       const allowed = this.kind === "pdf" ? PDF_TOOLS : NB_TOOLS;
       this.setTool(allowed.includes(tb.tool) ? tb.tool : this.tool);
     }
@@ -1156,8 +1210,8 @@ export class Panel {
     set(this.b.image, has);
     if (this.kind === "pdf") set(this.b.save, has);
     else {
-      set(this.b.del, n > 1); set(this.b.earlier, this.cur > 0); set(this.b.later, this.cur < n - 1);
-      this.paper.value = this.pages[this.cur]?.paper || "lined";
+      set(this.b.del, n > 1); set(this.b.earlier, this.shown() > 0); set(this.b.later, this.shown() < n - 1);
+      this.paper.value = this.pages[this.shown()]?.paper || "lined";
     }
     if (this.toolBtns.hltext) this.toolBtns.hltext.disabled = !has;
   }
