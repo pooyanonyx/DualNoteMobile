@@ -6,7 +6,7 @@ import { setImageLoadedCallback } from "./render.js";
 import { el, icon, toast, dialog, popup, closePopup } from "./ui.js";
 
 const NARROW = 860;                                  // below this width only one panel is shown at a time
-const LAYOUTS = [["PDF | Notebook  (default)", ["pdf", "nb"]], ["Notebook | PDF", ["nb", "pdf"]],
+const LAYOUTS = [["PDF | Notebook", ["pdf", "nb"]], ["Notebook | PDF", ["nb", "pdf"]],
   ["Notebook | Notebook", ["nb", "nb2"]], ["PDF | PDF", ["pdf", "pdf2"]]];
 
 // ------------------------------------------------------------- IndexedDB
@@ -103,9 +103,31 @@ export class App {
   }
   setView(mode) { this.viewMode = M.normalizeView(mode, this.order); this.refreshLayout(); this.scheduleAutosave(); }
   setActive(p) { if (this.active === p) return; this.active = p; for (const q of Object.values(this.panels)) q.root.classList.toggle("active", q === p); }
+  /** "both" | "pdf" | "nb" when the screen is made of the PDF and notebook panels, otherwise null. */
+  layoutMode() {
+    const o = this.order;
+    if (!(o.length === 2 && o.includes("pdf") && o.includes("nb"))) return null;
+    return this.viewMode === "both" ? "both" : (this.viewMode === "left" ? o[0] : o[1]);
+  }
+  /** PDF + Notebook (side by side) / PDF Only / Notebook Only. Panels are only hidden, never closed: nothing is lost or reset. */
+  async setLayoutMode(mode) {
+    let order = this.order;
+    if (!(order.length === 2 && order.includes("pdf") && order.includes("nb"))) {
+      order = ["pdf", "nb"];                                  // coming from e.g. Notebook | Notebook: ask about unsaved panels as usual
+      if (!(await this.setLayout(order))) return;
+    }
+    this.viewMode = mode === "both" ? "both" : (order[0] === mode ? "left" : "right");
+    this.refreshLayout(); this.scheduleAutosave();
+  }
   openLayoutMenu() {
-    const box = el("div", { class: "menu" }, LAYOUTS.map(([label, order]) => el("button", { class: "mi" + (this.order.join() === order.join() ? " on" : ""), type: "button",
-      onclick: () => { closePopup(); this.setLayout(order); } }, el("span", { class: "chk" }, this.order.join() === order.join() ? "✓" : ""), label)));
+    const mode = this.layoutMode();
+    const row = (label, on, fn) => el("button", { class: "mi" + (on ? " on" : ""), type: "button", role: "menuitemradio", "aria-checked": String(on), onclick: fn },
+      el("span", { class: "chk" }, on ? "✓" : ""), label);
+    const box = el("div", { class: "menu", role: "menu" },
+      el("div", { class: "mh" }, "Show"),
+      ...[["both", "PDF + Notebook"], ["pdf", "PDF Only"], ["nb", "Notebook Only"]].map(([m, label]) => row(label, mode === m, () => { closePopup(); this.setLayoutMode(m); })),
+      el("div", { class: "msep" }), el("div", { class: "mh" }, "Which panels, left to right"),
+      ...LAYOUTS.map(([label, order]) => row(label, this.order.join() === order.join(), () => { closePopup(); this.setLayout(order); })));
     popup(this.layoutBtn, box);
   }
   switchSides() { this.setLayout([...this.order].reverse(), false); }

@@ -17,7 +17,10 @@ const LIB = (p) => new URL("../lib/" + p, import.meta.url).href;
 async function openRaw(bytes) {
   const lib = await initPdfjs();
   const task = lib.getDocument({ data: bytes.slice(), cMapUrl: LIB("cmaps/"), cMapPacked: true,
-    standardFontDataUrl: LIB("standard_fonts/"), isEvalSupported: false });
+    standardFontDataUrl: LIB("standard_fonts/"), isEvalSupported: false,
+    // WebAssembly decoders: JPEG 2000 (JPX), JBIG2 and ICC colour profiles. Without wasmUrl pdf.js cannot decode these
+    // image types and silently leaves them out of the page.
+    wasmUrl: LIB("wasm/"), iccUrl: LIB("iccs/") });
   try { return await task.promise; } catch (e) {
     if (e && e.name === "PasswordException") throw new Error("Password-protected PDFs are not supported.");
     throw new Error("Could not open this file as a PDF.");

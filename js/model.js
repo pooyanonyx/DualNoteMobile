@@ -3,7 +3,8 @@
 //
 // Every drawing is a small JSON object ("item") in page coordinates (PDF points):
 //   pen / mark   {t, pts:[[x,y],...], color:"#rrggbb", w}
-//   line / arrow {t, x1,y1,x2,y2, color, w}        rect / ellipse: same fields
+//   line / arrow {t, x1,y1,x2,y2, color, w}        rect / ellipse: same fields (+ optional fill: "#rrggbb" = filled interior)
+//   shape {t, kind, x1,y1,x2,y2, color, w, fill?}   other closed shapes inside a box: triangle, diamond, pentagon, hexagon, star
 //   hl           {t:"hl", x1,y1,x2,y2, color}      (text highlight box)
 //   image        {t:"image", x1,y1,x2,y2, data: base64 PNG}
 //   note         {t:"note", x,y,w,h, text, color (paper), size}
@@ -23,6 +24,37 @@ export const MIN_SIZE = 4.0;
 export const TEXT_DIRS = ["ltr", "rtl"];                    // explicit text direction of a text / note item
 export const TEXT_ALIGNS = ["left", "center", "right"];     // explicit alignment (separate from direction)
 export const TEXT_BOX_W = 300.0;                              // default width of a new text box
+
+// ------------------------------------------------------------------ shapes
+// Every shape is dragged out as a box (x1,y1)-(x2,y2). line / arrow / rect / ellipse keep their own item types (old files);
+// the other closed shapes are t:"shape" with a kind, drawn as a polygon scaled into the box.
+const normPoly = (pts) => {
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  return pts.map(([x, y]) => [(x - x0) / (x1 - x0), (y - y0) / (y1 - y0)]);
+};
+const regularPoly = (n, rot) => normPoly(Array.from({ length: n }, (_, i) => [Math.cos(rot + 2 * Math.PI * i / n), Math.sin(rot + 2 * Math.PI * i / n)]));
+const starPoly = (n, ratio) => normPoly(Array.from({ length: 2 * n }, (_, i) => { const r = i % 2 ? ratio : 1, a = -Math.PI / 2 + Math.PI * i / n; return [r * Math.cos(a), r * Math.sin(a)]; }));
+export const SHAPE_POLYS = {
+  triangle: [[0.5, 0], [1, 1], [0, 1]], diamond: [[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]],
+  pentagon: regularPoly(5, -Math.PI / 2), hexagon: regularPoly(6, 0), star: starPoly(5, 0.382),
+};
+export const SHAPE_KINDS = [
+  { id: "line", label: "Line", t: "line", closed: false }, { id: "arrow", label: "Arrow", t: "arrow", closed: false },
+  { id: "rect", label: "Rectangle", t: "rect", closed: true }, { id: "ellipse", label: "Ellipse", t: "ellipse", closed: true },
+  { id: "triangle", label: "Triangle", t: "shape", closed: true }, { id: "diamond", label: "Diamond", t: "shape", closed: true },
+  { id: "pentagon", label: "Pentagon", t: "shape", closed: true }, { id: "hexagon", label: "Hexagon", t: "shape", closed: true },
+  { id: "star", label: "Star", t: "shape", closed: true },
+];
+export const shapeKindInfo = (id) => SHAPE_KINDS.find((k) => k.id === id) || SHAPE_KINDS[2];
+export const isClosedShape = (d) => d.t === "rect" || d.t === "ellipse" || d.t === "shape";   // can have a filled interior
+function pointInPoly(x, y, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
 export const LAYOUT_KEYS = ["pdf", "pdf2", "nb", "nb2"];
 export const DEFAULT_LAYOUT = ["pdf", "nb"];
 
@@ -125,9 +157,11 @@ export function sanitizeItem(d) {
       if (!pts.length) return null;
       return addExtras(d, { t, pts, color: color(d.color), w: Math.max(0.1, num(d.w)) });
     }
-    if (t === "line" || t === "arrow" || t === "rect" || t === "ellipse") {
-      return addExtras(d, { t, x1: num(d.x1), y1: num(d.y1), x2: num(d.x2), y2: num(d.y2),
-        color: color(d.color), w: Math.max(0.1, num(d.w)) });
+    if (t === "line" || t === "arrow" || t === "rect" || t === "ellipse" || t === "shape") {
+      const out = { t, x1: num(d.x1), y1: num(d.y1), x2: num(d.x2), y2: num(d.y2), color: color(d.color), w: Math.max(0.1, num(d.w)) };
+      if (t === "shape") out.kind = SHAPE_POLYS[d.kind] ? d.kind : "triangle";
+      if (t !== "line" && t !== "arrow" && typeof d.fill === "string") { try { out.fill = color(d.fill); } catch { /* ignore bad optional value */ } }
+      return addExtras(d, out);
     }
     if (t === "hl") {
       return addExtras(d, { t, x1: num(d.x1), y1: num(d.y1), x2: num(d.x2), y2: num(d.y2), color: color(d.color) });
@@ -173,6 +207,7 @@ export function hitTest(d, x, y, tol) {
   if (t === "line" || t === "arrow") return distPointSegment(x, y, d.x1, d.y1, d.x2, d.y2) <= d.w / 2 + tol;
   if (t === "rect") {
     const [x0, y0, x1, y1] = box(d);
+    if (d.fill && x0 <= x && x <= x1 && y0 <= y && y <= y1) return true;           // a filled shape is also hit inside
     const dx = Math.max(x0 - x, 0, x - x1), dy = Math.max(y0 - y, 0, y - y1);
     const dist = (dx || dy) ? Math.hypot(dx, dy) : Math.min(x - x0, x1 - x, y - y0, y1 - y);
     return dist <= d.w / 2 + tol;
@@ -182,7 +217,16 @@ export function hitTest(d, x, y, tol) {
     const rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
     if (rx < 0.5 || ry < 0.5) return distPointSegment(x, y, x0, y0, x1, y1) <= d.w / 2 + tol;
     const v = Math.hypot((x - (x0 + x1) / 2) / rx, (y - (y0 + y1) / 2) / ry);
+    if (d.fill && v <= 1) return true;
     return Math.abs(v - 1) * Math.min(rx, ry) <= d.w / 2 + tol;
+  }
+  if (t === "shape") {
+    const pts = shapePoints(d);
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if (distPointSegment(x, y, a[0], a[1], b[0], b[1]) <= d.w / 2 + tol) return true;
+    }
+    return !!d.fill && pointInPoly(x, y, pts);
   }
   if (t === "hl" || t === "image") {
     const [x0, y0, x1, y1] = box(d);
@@ -192,6 +236,11 @@ export function hitTest(d, x, y, tol) {
     return d.x - tol <= x && x <= d.x + d.w + tol && d.y - tol <= y && y <= d.y + d.h + tol;
   }
   return false;                                              // text: measured by the renderer
+}
+/** Corner points of a t:"shape" item in page coordinates. */
+export function shapePoints(d) {
+  const [x0, y0, x1, y1] = box(d), w = x1 - x0, h = y1 - y0;
+  return (SHAPE_POLYS[d.kind] || SHAPE_POLYS.triangle).map(([u, v]) => [x0 + u * w, y0 + v * h]);
 }
 export function translate(d, dx, dy) {
   const n = { ...d }, t = d.t;
@@ -203,7 +252,7 @@ export function translate(d, dx, dy) {
 
 // ---------------------------------------------------------- resize handles
 export function halfWidth(d) {
-  return ["pen", "mark", "line", "arrow", "rect", "ellipse"].includes(d.t) ? d.w / 2 : 0;
+  return ["pen", "mark", "line", "arrow", "rect", "ellipse", "shape"].includes(d.t) ? d.w / 2 : 0;
 }
 export function geomBox(d, textBox = null) {
   const t = d.t;
@@ -254,7 +303,7 @@ export function resizeItem(d, handle, px, py, textBox = null, e = 0, keepAspect 
     if (handle.includes("w")) { x0 = ox1 - nw; x1 = ox1; } else { x0 = ox0; x1 = ox0 + nw; }
     if (handle.includes("n")) { y0 = oy1 - nh; y1 = oy1; } else { y0 = oy0; y1 = oy0 + nh; }
   }
-  if (t === "rect" || t === "ellipse" || t === "hl" || t === "image") {
+  if (t === "rect" || t === "ellipse" || t === "shape" || t === "hl" || t === "image") {
     n.x1 = round2(x0); n.y1 = round2(y0); n.x2 = round2(x1); n.y2 = round2(y1);
   } else if (t === "note") {
     n.x = round2(x0); n.y = round2(y0); n.w = round2(Math.max(60, x1 - x0)); n.h = round2(Math.max(40, y1 - y0));

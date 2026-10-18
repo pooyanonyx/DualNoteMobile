@@ -203,12 +203,21 @@ export function drawItem(ctx, d, opts = {}) {
     linePath(ctx, d, t === "arrow"); ctx.stroke();
   } else if (t === "rect") {
     ctx.strokeStyle = M.cssColor(d); ctx.lineWidth = d.w; ctx.lineJoin = "miter";
-    ctx.strokeRect(Math.min(d.x1, d.x2), Math.min(d.y1, d.y2), Math.abs(d.x2 - d.x1), Math.abs(d.y2 - d.y1));
+    const rx = Math.min(d.x1, d.x2), ry = Math.min(d.y1, d.y2), rw = Math.abs(d.x2 - d.x1), rh = Math.abs(d.y2 - d.y1);
+    if (d.fill) { ctx.fillStyle = M.cssColor({ ...d, color: d.fill }); ctx.fillRect(rx, ry, rw, rh); }   // interior first, outline on top
+    ctx.strokeRect(rx, ry, rw, rh);
   } else if (t === "ellipse") {
     ctx.strokeStyle = M.cssColor(d); ctx.lineWidth = d.w;
     ctx.beginPath();
     ctx.ellipse((d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2, Math.max(0.01, Math.abs(d.x2 - d.x1) / 2),
       Math.max(0.01, Math.abs(d.y2 - d.y1) / 2), 0, 0, Math.PI * 2);
+    if (d.fill) { ctx.fillStyle = M.cssColor({ ...d, color: d.fill }); ctx.fill(); }
+    ctx.stroke();
+  } else if (t === "shape") {
+    ctx.strokeStyle = M.cssColor(d); ctx.lineWidth = d.w; ctx.lineJoin = "miter";
+    const pts = M.shapePoints(d);
+    ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
+    if (d.fill) { ctx.fillStyle = M.cssColor({ ...d, color: d.fill }); ctx.fill(); }
     ctx.stroke();
   } else if (t === "hl") {
     ctx.fillStyle = M.cssColor(d);

@@ -9,14 +9,14 @@ Live: https://pooyanonyx.github.io/DualNoteMobile/
 - `css/` - styles
 - `js/` - app code
 - `icons/` - app icons
-- `lib/` - third-party libraries (jszip, pdf-lib, pdf.js, pdf fonts, cmaps) and `lib/fonts/` (Vazirmatn, Persian font, SIL OFL)
+- `lib/` - third-party libraries (jszip, pdf-lib, pdf.js, pdf fonts, cmaps) `lib/fonts/` (Vazirmatn, Persian font, SIL OFL) and `lib/wasm/` + `lib/iccs/` (pdf.js decoders for JPEG 2000, JBIG2 and ICC colour - without them such images are missing from the page)
 
 ## Deploy
 Upload everything in this folder to the root of the repo (or any web server folder).
 GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 
 ## Notes
-After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v5`) so devices pick up the update.
+After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v7`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
 
 ## Text direction and alignment

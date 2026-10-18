@@ -11,12 +11,13 @@ const TOOL_INFO = {
   pen: ["Pen", "Freehand pen"], mark: ["Marker", "Semi-transparent highlighter marker"],
   hltext: ["Highlight", "Drag across PDF text to highlight whole words"], eraser: ["Eraser", "Drag over items to erase them"],
   text: ["Text", "Tap to add a text box"], note: ["Note", "Tap to stick a sticky note on the page"],
-  line: ["Line", "Draw a line"], arrow: ["Arrow", "Draw an arrow"], rect: ["Rect", "Draw a rectangle"], ellipse: ["Circle", "Draw an ellipse"],
+  shape: ["Shapes", "Pick a shape (line, arrow, rectangle, ellipse, triangle, ...) and draw it"],
   pan: ["Hand", "Drag to scroll"],
 };
-const PDF_TOOLS = ["select", "pen", "mark", "hltext", "eraser", "text", "note", "line", "arrow", "rect", "ellipse", "pan"];
-const NB_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "line", "arrow", "rect", "ellipse", "pan"];
-const GROUP_OF_TOOL = { pen: "draw", text: "draw", line: "draw", arrow: "draw", rect: "draw", ellipse: "draw", mark: "mark", hltext: "hltext", note: "note" };
+const PDF_TOOLS = ["select", "pen", "mark", "hltext", "eraser", "text", "note", "shape", "pan"];
+const NB_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
+const GROUP_OF_TOOL = { pen: "draw", text: "draw", shape: "draw", mark: "mark", hltext: "hltext", note: "note" };
+const OLD_SHAPE_TOOLS = ["line", "arrow", "rect", "ellipse"];     // separate tools of older versions / workspaces -> Shapes tool
 const STYLE_TO_ITEM = { color: "color", width: "w", size: "size", alpha: "alpha", bright: "bright" };
 export function defaultGroups(color = "#d32f2f") {
   return {
@@ -52,6 +53,7 @@ export class Panel {
     this.rasters = new Map(); this.rasterJob = null; this.rasterTimer = 0; this.badPages = new Set();
     this.sizeJobs = new Map(); this.offs = null; this.docW = 595; this.docH = 842; this.vp = 0; this.vpLock = null; this.fling = 0;
     this.fmt = { dir: "ltr", align: "left" }; this.fmtKey = "";      // text direction / alignment used for new text
+    this.shapeKind = "rect"; this.fillOn = false; this.fillKey = "";  // Shapes tool: active shape + Fill switch
     if (kind === "nb") { this.layout(); this.view.ty = 14; }
     this._raf = 0; this.barsOpen = true;
     this.buildDom();
@@ -128,10 +130,21 @@ export class Panel {
     const toolBar = mk("bar tools");
     this.toolBtns = {};
     for (const k of (this.kind === "pdf" ? PDF_TOOLS : NB_TOOLS)) {
-      const x = el("button", { class: "btn tool", type: "button", title: TOOL_INFO[k][1], "aria-label": TOOL_INFO[k][0],
-        "aria-pressed": "false", onclick: () => this.setTool(k) }, icon(k), el("span", { class: "lbl" }, TOOL_INFO[k][0]));
+      let x;
+      if (k === "shape") {          // one button for all shapes: shows the active shape, opens the shape menu
+        this.shapeIcon = el("span", { class: "shico" }, icon(this.shapeKind));
+        x = el("button", { class: "btn tool", type: "button", title: TOOL_INFO[k][1], "aria-label": TOOL_INFO[k][0], "aria-haspopup": "menu",
+          "aria-pressed": "false", onclick: () => this.openShapes() }, this.shapeIcon, el("span", { class: "lbl" }, TOOL_INFO[k][0]), icon("chevdown", "tiny"));
+        this.shapeBtn = x;
+      } else {
+        x = el("button", { class: "btn tool", type: "button", title: TOOL_INFO[k][1], "aria-label": TOOL_INFO[k][0],
+          "aria-pressed": "false", onclick: () => this.setTool(k) }, icon(k), el("span", { class: "lbl" }, TOOL_INFO[k][0]));
+      }
       this.toolBtns[k] = x; toolBar.append(x);
     }
+    this.fillBtn = el("button", { class: "btn tool fillbtn", type: "button", "aria-label": "Fill", "aria-pressed": "false", disabled: true,
+      title: "Fill closed shapes with the colour", onclick: () => this.toggleFill() }, icon("fill"), el("span", { class: "lbl" }, "Fill"));
+    toolBar.append(this.fillBtn);
     this.colorBtn = el("button", { class: "btn", type: "button", title: "Choose a colour", onclick: () => this.openColor() },
       el("span", { class: "cdot" }), el("span", { class: "lbl" }, "Color"), icon("chevdown", "tiny"));
     this.brushBtn = el("button", { class: "btn", type: "button", title: "Thickness, opacity, brightness, text size", onclick: () => this.openBrush() },
@@ -208,6 +221,7 @@ export class Panel {
       if (field in d || key === "alpha" || key === "bright") {
         const v = key === "width" || key === "size" ? Number(value) : value;
         const n = { ...d, [field]: v };
+        if (key === "color" && d.fill) n.fill = v;                  // a filled shape stays filled with its colour
         if (JSON.stringify(n) !== JSON.stringify(d)) {
           const items = this.items.slice(); items[this.selected] = n;
           this.commit(items, { keepSel: true });
@@ -235,6 +249,7 @@ export class Panel {
   // ------------------------------------------------------------ view / zoom
   onResize() {
     const r = this.stage.getBoundingClientRect();
+    if (this.root.hidden || r.width === 0 || r.height === 0) return;     // hidden panel (layout switch): keep its view exactly as it is
     this.cw = Math.max(50, Math.round(r.width)); this.ch = Math.max(50, Math.round(r.height));
     this.dpr = window.devicePixelRatio || 1;
     this.canvas.width = Math.round(this.cw * this.dpr); this.canvas.height = Math.round(this.ch * this.dpr);
@@ -248,12 +263,12 @@ export class Panel {
     const doc = this.continuous() && this.offs, v = this.view;
     const w = doc ? this.sizeOf(this.vp)[0] : this.pageDims()[0];
     const margin = this.cw < 500 ? 6 : 14;
-    const anchor = doc ? this.offs[this.vp] * v.scale + v.ty : 0;      // where the current page's top is on screen
+    const topDoc = doc ? -v.ty / v.scale : 0;                          // document position at the top edge of the view (kept when the width changes)
     v.scale = clamp((this.cw - 2 * margin) / w, 0.2, 6);
     v.fit = true;
     if (doc) {
       v.tx = (this.cw - this.docW * v.scale) / 2;
-      v.ty = (userAction ? margin : anchor) - this.offs[this.vp] * v.scale;
+      v.ty = userAction ? margin - this.offs[this.vp] * v.scale : -topDoc * v.scale;
       this.clampView();
     } else { v.tx = (this.cw - w * v.scale) / 2; v.ty = margin; }
     if (userAction) { this.render(); this.scheduleRaster(); }
@@ -522,7 +537,7 @@ export class Panel {
     const ctx = this.ctx, d = this.dpr;
     ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.fillStyle = "#c9ccd1"; ctx.fillRect(0, 0, this.cw, this.ch);
-    this.updateFmtUi();
+    this.updateFmtUi(); this.updateFillUi();
     this.msg.hidden = this.hasPage;
     if (!this.hasPage) return;
     this.drawDoc(ctx);
@@ -722,7 +737,7 @@ export class Panel {
       this.updateStrokePreview();
       return;
     }
-    if (["line", "arrow", "rect", "ellipse", "hltext"].includes(t)) { this.action = { type: "shape", p0: this.clampP(p), l0: l, moved: false }; return; }
+    if (t === "shape" || t === "hltext") { this.action = { type: "shape", p0: this.clampP(p), l0: l, moved: false }; return; }
     if (t === "eraser") { this.live = this.items.slice(); this.action = { type: "erase" }; this.eraseAt(p); return; }
     if (t === "text" || t === "note") { this.action = { type: "tap", p, l0: l, moved: false }; return; }
   }
@@ -852,13 +867,17 @@ export class Panel {
   shapeItems(a, b, shift) {
     const st = this.curStyle;
     if (this.tool === "hltext") return this.regionRects(a, b).map((r) => ({ t: "hl", x1: r[0], y1: r[1], x2: r[2], y2: r[3], color: st.color, ...this.styleExtra() }));
+    const kind = M.shapeKindInfo(this.shapeKind);
     let x2 = b.x, y2 = b.y;
-    if (shift && (this.tool === "rect" || this.tool === "ellipse")) {
+    if (shift && kind.closed) {
       const s = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
       x2 = a.x + (b.x >= a.x ? s : -s); y2 = a.y + (b.y >= a.y ? s : -s);
     }
     const r2 = (v) => Math.round(v * 100) / 100;
-    return [{ t: this.tool, x1: r2(a.x), y1: r2(a.y), x2: r2(x2), y2: r2(y2), color: st.color, w: st.width, ...this.styleExtra() }];
+    const item = { t: kind.t, x1: r2(a.x), y1: r2(a.y), x2: r2(x2), y2: r2(y2), color: st.color, w: st.width, ...this.styleExtra() };
+    if (kind.t === "shape") item.kind = kind.id;
+    if (kind.closed && this.fillOn) item.fill = st.color;                 // Fill on: interior in the drawing colour, outline stays
+    return [item];
   }
   eraseAt(p) {
     const tol = this.tol(), live = this.live;
@@ -884,6 +903,49 @@ export class Panel {
       else { r[0] = Math.min(r[0], w.x0); r[1] = Math.min(r[1], w.y0); r[2] = Math.max(r[2], w.x1); r[3] = Math.max(r[3], w.y1); }
     }
     return [...lines.values()].map((r) => r.map((v) => Math.round(v * 100) / 100));
+  }
+
+  // ------------------------------------------------------- shapes + fill
+  openShapes() {
+    this.finishEdit();
+    if (this.tool !== "shape") this.setTool("shape");
+    const grid = el("div", { class: "shapegrid", role: "menu" }, M.SHAPE_KINDS.map((k) => el("button", {
+      class: "shp" + (k.id === this.shapeKind ? " on" : ""), type: "button", role: "menuitemradio", "aria-checked": String(k.id === this.shapeKind),
+      title: k.label, "aria-label": k.label, onclick: () => { closePopup(); this.setShape(k.id); } }, icon(k.id), el("span", { class: "slab" }, k.label))));
+    popup(this.shapeBtn, grid);                      // pressing the Shapes button again closes the menu
+  }
+  setShape(id) {
+    this.shapeKind = M.shapeKindInfo(id).id;
+    this.updateShapeBtn();
+    this.setTool("shape");
+    this.fillKey = ""; this.updateFillUi();
+  }
+  updateShapeBtn() {
+    const k = M.shapeKindInfo(this.shapeKind);
+    this.shapeIcon.replaceChildren(icon(k.id));
+    this.shapeBtn.title = "Shapes - active: " + k.label;
+  }
+  fillTarget() {                                     // a selected closed shape (the Fill button then edits that shape)
+    if (this.tool === "select" && this.selected !== null) { const d = this.items[this.selected]; if (d && M.isClosedShape(d)) return d; }
+    return null;
+  }
+  fillEnabled() { return !!this.fillTarget() || (this.tool === "shape" && M.shapeKindInfo(this.shapeKind).closed); }
+  updateFillUi() {
+    const en = this.fillEnabled(), d = this.fillTarget(), on = en && (d ? !!d.fill : this.fillOn), key = en + "|" + on;
+    if (key === this.fillKey) return;
+    this.fillKey = key;
+    this.fillBtn.disabled = !en; this.fillBtn.classList.toggle("on", on); this.fillBtn.setAttribute("aria-pressed", String(on));
+    this.fillBtn.title = en ? `Fill closed shapes with the colour: ${on ? "on" : "off"}` : "Fill applies to closed shapes (rectangle, ellipse, ...); lines have no interior";
+  }
+  toggleFill() {
+    const d = this.fillTarget();
+    if (d) {
+      const n = { ...d };
+      if (d.fill) delete n.fill; else n.fill = d.color;
+      const items = this.items.slice(); items[this.selected] = n; this.commit(items, { keepSel: true });
+      this.fillOn = !!n.fill;
+    } else if (this.fillEnabled()) this.fillOn = !this.fillOn;
+    this.fillKey = ""; this.updateFillUi(); this.render();
   }
 
   // ------------------------------------------------- text direction / alignment
@@ -1168,7 +1230,7 @@ export class Panel {
     }
   }
   viewState() { return { zoom: Math.round(this.view.scale * 1e4) / 1e4, auto_fit: this.view.fit, page: this.shown(), bars: this.barsOpen,
-    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt } } }; }
+    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt }, shape: this.shapeKind, fill: this.fillOn } }; }
   restoreView(st) {
     if (!st || typeof st !== "object") return;
     const tb = st.toolbar;
@@ -1177,8 +1239,13 @@ export class Panel {
       if (Array.isArray(tb.recent)) this.recent = tb.recent.map((c) => { const p = typeof c === "string" ? M.parseHex(c) : null; return p ? M.toHex(...p) : null; }).filter(Boolean).slice(0, 10);
       const tf = tb.text_format;
       if (tf && typeof tf === "object") this.fmt = { dir: M.TEXT_DIRS.includes(tf.dir) ? tf.dir : this.fmt.dir, align: M.TEXT_ALIGNS.includes(tf.align) ? tf.align : this.fmt.align };
+      if (typeof tb.shape === "string" && M.SHAPE_KINDS.some((k) => k.id === tb.shape)) this.shapeKind = tb.shape;
+      if (typeof tb.fill === "boolean") this.fillOn = tb.fill;
+      let tool = tb.tool;
+      if (OLD_SHAPE_TOOLS.includes(tool)) { this.shapeKind = tool; tool = "shape"; }   // workspaces from before the Shapes tool
+      this.updateShapeBtn();
       const allowed = this.kind === "pdf" ? PDF_TOOLS : NB_TOOLS;
-      this.setTool(allowed.includes(tb.tool) ? tb.tool : this.tool);
+      this.setTool(allowed.includes(tool) ? tool : this.tool);
     }
     if (typeof st.bars === "boolean") this.setBars(st.bars);
     if (st.auto_fit === false && Number.isFinite(+st.zoom) && this.hasPage) {
