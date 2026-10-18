@@ -57,6 +57,10 @@ function pointInPoly(x, y, pts) {
 }
 export const LAYOUT_KEYS = ["pdf", "pdf2", "nb", "nb2"];
 export const DEFAULT_LAYOUT = ["pdf", "nb"];
+// Workspace type = which panels the workspace is made of, left to right. It is stored in the workspace file (manifest.workspace_type).
+export const WORKSPACE_TYPES = { pdf: ["pdf"], notebook: ["nb"], "pdf+notebook": ["pdf", "nb"], "notebook+pdf": ["nb", "pdf"] };
+export const workspaceTypeOf = (order) => Object.keys(WORKSPACE_TYPES).find((t) => WORKSPACE_TYPES[t].join() === order.join()) || null;
+export const layoutOfType = (t) => (typeof t === "string" && Object.hasOwn(WORKSPACE_TYPES, t) ? [...WORKSPACE_TYPES[t]] : null);
 
 // Python's round() (half to even) so colours match the Windows app exactly.
 export function pyRound(x) {
@@ -371,11 +375,12 @@ export function parsePdfAnnotations(raw, pageCount) {
 
 // ----------------------------------------------------------- window layout
 export function sanitizeLayout(v) {
-  if (Array.isArray(v) && v.length === 2 && v.every((k) => LAYOUT_KEYS.includes(k)) && v[0] !== v[1]) return [...v];
+  if (Array.isArray(v) && (v.length === 1 || v.length === 2) && v.every((k) => LAYOUT_KEYS.includes(k)) && new Set(v).size === v.length) return [...v];
   return [...DEFAULT_LAYOUT];
 }
 export function hiddenByLayoutChange(oldOrder, newOrder) { return oldOrder.filter((k) => !newOrder.includes(k)); }
 export function normalizeView(view, order) {
+  if (order.length < 2) return "both";                         // single-panel workspace: nothing to switch between
   if (["left", "both", "right"].includes(view)) return view;
   const key = { pdf: "pdf", notebook: "nb" }[view];
   if (!key || !order.includes(key)) return "both";

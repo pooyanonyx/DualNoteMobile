@@ -6,8 +6,8 @@ import { setImageLoadedCallback } from "./render.js";
 import { el, icon, toast, dialog, popup, closePopup } from "./ui.js";
 
 const NARROW = 860;                                  // below this width only one panel is shown at a time
-const LAYOUTS = [["PDF | Notebook", ["pdf", "nb"]], ["Notebook | PDF", ["nb", "pdf"]],
-  ["Notebook | Notebook", ["nb", "nb2"]], ["PDF | PDF", ["pdf", "pdf2"]]];
+// The Layout menu chooses the workspace type, i.e. which panels the workspace consists of (not just what is visible).
+const LAYOUTS = [["PDF Only", ["pdf"]], ["Notebook Only", ["nb"]], ["PDF + Notebook", ["pdf", "nb"]], ["Notebook + PDF", ["nb", "pdf"]]];
 
 // ------------------------------------------------------------- IndexedDB
 const idb = {
@@ -58,7 +58,7 @@ export class App {
   buildDom() {
     const b = (ic, label, title, fn, cls = "") => el("button", { class: "btn " + cls, type: "button", title, "aria-label": title, onclick: fn }, icon(ic), el("span", { class: "lbl" }, label));
     this.wsOpenInput = el("input", { type: "file", accept: ".dnws,application/zip", hidden: true, onchange: () => this.onWorkspaceFile() });
-    this.layoutBtn = b("layout", "Layout", "Choose what is shown on the left and the right", () => this.openLayoutMenu());
+    this.layoutBtn = b("layout", "Layout", "Choose the workspace layout (which panels it has)", () => this.openLayoutMenu());
     this.switchBtn = b("swap", "Switch", "Swap the left and right panels (nothing is closed or lost)", () => this.switchSides());
     this.seg = el("div", { class: "seg", role: "tablist" });
     this.installBtn = b("plus", "Install", "Install DualNote as an app", async () => { if (this.installEvt) { this.installEvt.prompt(); this.installEvt = null; this.installBtn.hidden = true; } }, "primary");
@@ -83,17 +83,20 @@ export class App {
     return o.includes("nb2") ? "Notebook 1" : "Notebook";
   }
   get narrow() { return window.innerWidth < NARROW; }
-  effectiveView() { const v = this.viewMode; return this.narrow && v === "both" ? "left" : v; }
+  // Wide screens show every panel of the workspace. Only on a narrow screen (phone) a two-panel workspace shows one panel at a time (tabs).
+  effectiveView() { if (this.order.length < 2) return "both"; return this.narrow ? (this.viewMode === "right" ? "right" : "left") : "both"; }
   refreshLayout() {
-    const view = this.effectiveView(), shown = { both: this.order, left: this.order.slice(0, 1), right: this.order.slice(1) }[view];
+    const two = this.order.length === 2, view = this.effectiveView(), shown = { both: this.order, left: this.order.slice(0, 1), right: this.order.slice(1) }[view];
     for (const [k, p] of Object.entries(this.panels)) {
       p.root.hidden = !shown.includes(k); p.root.style.order = String(this.order.indexOf(k) < 0 ? 9 : this.order.indexOf(k));
       p.setLabel(this.name(k));
     }
     this.root.dataset.narrow = String(this.narrow);
     this.seg.replaceChildren();
-    const opts = this.narrow ? [["left", this.name(this.order[0])], ["right", this.name(this.order[1])]]
-      : [["left", this.name(this.order[0]) + " only"], ["both", "Both"], ["right", this.name(this.order[1]) + " only"]];
+    const opts = two && this.narrow ? [["left", this.name(this.order[0])], ["right", this.name(this.order[1])]] : [];
+    this.seg.hidden = !opts.length; this.switchBtn.hidden = !two;
+    const type = M.workspaceTypeOf(this.order), label = (LAYOUTS.find(([, o]) => o.join() === this.order.join()) || ["custom"])[0];
+    this.layoutBtn.title = `Layout: ${type ? label : "custom"} - choose which panels the workspace has`;
     for (const [v, text] of opts) {
       this.seg.append(el("button", { class: "segbtn" + (v === view ? " on" : ""), type: "button", role: "tab", "aria-selected": String(v === view),
         onclick: () => this.setView(v) }, text));
@@ -103,54 +106,46 @@ export class App {
   }
   setView(mode) { this.viewMode = M.normalizeView(mode, this.order); this.refreshLayout(); this.scheduleAutosave(); }
   setActive(p) { if (this.active === p) return; this.active = p; for (const q of Object.values(this.panels)) q.root.classList.toggle("active", q === p); }
-  /** "both" | "pdf" | "nb" when the screen is made of the PDF and notebook panels, otherwise null. */
-  layoutMode() {
-    const o = this.order;
-    if (!(o.length === 2 && o.includes("pdf") && o.includes("nb"))) return null;
-    return this.viewMode === "both" ? "both" : (this.viewMode === "left" ? o[0] : o[1]);
-  }
-  /** PDF + Notebook (side by side) / PDF Only / Notebook Only. Panels are only hidden, never closed: nothing is lost or reset. */
-  async setLayoutMode(mode) {
-    let order = this.order;
-    if (!(order.length === 2 && order.includes("pdf") && order.includes("nb"))) {
-      order = ["pdf", "nb"];                                  // coming from e.g. Notebook | Notebook: ask about unsaved panels as usual
-      if (!(await this.setLayout(order))) return;
-    }
-    this.viewMode = mode === "both" ? "both" : (order[0] === mode ? "left" : "right");
-    this.refreshLayout(); this.scheduleAutosave();
-  }
   openLayoutMenu() {
-    const mode = this.layoutMode();
     const row = (label, on, fn) => el("button", { class: "mi" + (on ? " on" : ""), type: "button", role: "menuitemradio", "aria-checked": String(on), onclick: fn },
       el("span", { class: "chk" }, on ? "✓" : ""), label);
     const box = el("div", { class: "menu", role: "menu" },
-      el("div", { class: "mh" }, "Show"),
-      ...[["both", "PDF + Notebook"], ["pdf", "PDF Only"], ["nb", "Notebook Only"]].map(([m, label]) => row(label, mode === m, () => { closePopup(); this.setLayoutMode(m); })),
-      el("div", { class: "msep" }), el("div", { class: "mh" }, "Which panels, left to right"),
       ...LAYOUTS.map(([label, order]) => row(label, this.order.join() === order.join(), () => { closePopup(); this.setLayout(order); })));
     popup(this.layoutBtn, box);
   }
   switchSides() { this.setLayout([...this.order].reverse(), false); }
+  /** Change the workspace structure (which panels it consists of, and in which order). Panels that leave the structure are asked about first. */
   async setLayout(order, ask = true) {
     order = M.sanitizeLayout(order);
     if (order.join() === this.order.join()) { this.refreshLayout(); return true; }
-    if (ask) for (const key of M.hiddenByLayoutChange(this.order, order)) if (!(await this.confirmHide(key))) return false;
+    if (ask) for (const key of M.hiddenByLayoutChange(this.order, order)) if (!(await this.confirmExclude(key))) return false;
     this.order = order; this.viewMode = "both";
     this.refreshLayout(); this.scheduleAutosave();
     return true;
   }
-  async confirmHide(key) {
+  /** Does this panel hold something the user made / opened? */
+  hasContent(p) { return p.kind === "pdf" ? p.hasPage : (p.dirty || !this.isPristine(p)); }
+  /** A panel is about to leave the workspace structure. Its data is NOT deleted: it stays in memory (and in the session backup)
+   *  and returns when a layout with that panel is chosen again - but it is not part of the workspace file any more. */
+  async confirmExclude(key) {
     const p = this.panels[key];
-    if (!p.dirty || (p.kind === "pdf" && !p.hasPage)) return true;
-    const what = p.kind === "pdf" ? "annotated PDF" : "notebook file";
-    const choice = await dialog({ title: "Unsaved changes",
-      content: el("div", {}, el("p", {}, `${this.name(key)} has changes that are not saved, and it is about to be replaced on screen.`),
-        el("p", {}, `Do you want to save it separately (as an ${what}) first?`),
-        el("p", { class: "muted" }, "If you choose “No”, it is not thrown away: it stays open in the background, and you will be asked again before it is closed.")),
-      buttons: [{ label: "Cancel", value: "cancel" }, { label: "No, don't save", value: "dont", danger: true }, { label: "Yes, save it", value: "save", primary: true }] });
+    if (!this.hasContent(p)) return true;
+    const what = p.kind === "pdf" ? "PDF" : "notebook", unsaved = p.dirty;
+    const choice = await dialog({ title: `Leave the ${what} out of this workspace?`,
+      content: el("div", {}, el("p", {}, `The new layout has no ${what} panel, so “${this.name(key)}” will no longer be part of this workspace and will not be written to its file.`),
+        unsaved ? el("p", {}, "It also has changes that are not saved yet.") : "",
+        el("p", { class: "muted" }, `Nothing is deleted: it stays in memory for this session and comes back if you choose a layout with a ${what} again. To keep it permanently, save it separately first.`)),
+      buttons: [{ label: "Cancel", value: "cancel" }, { label: `Save the ${what} separately first`, value: "save" }, { label: "Continue", value: "go", primary: true }] });
     if (!choice || choice === "cancel") return false;
-    if (choice === "save") return p.saveSeparately();
+    if (choice === "save") return !!(await p.saveSeparately());
     return true;
+  }
+  /** The panel of this kind in the current workspace; if there is none (e.g. a PDF is dropped into a Notebook-only workspace), the workspace becomes PDF + Notebook. */
+  async ensurePanelOfKind(kind) {
+    const have = this.order.map((k) => this.panels[k]).find((q) => q.kind === kind);
+    if (have) return have;
+    if (!(await this.setLayout([...M.DEFAULT_LAYOUT]))) return null;
+    return this.panels[kind === "pdf" ? "pdf" : "nb"];
   }
   /** Before a panel's content is replaced by opening something else. */
   async confirmReplace(p, action) {
@@ -213,11 +208,11 @@ export class App {
       const n = f.name.toLowerCase();
       if (n.endsWith(".dnws")) await this.openWorkspaceFile(f);
       else if (n.endsWith(".pdf") || f.type === "application/pdf") {
-        const p = at && at.kind === "pdf" ? at : this.order.map((k) => this.panels[k]).find((q) => q.kind === "pdf") || this.panels.pdf;
-        if (await this.confirmReplace(p, "open another PDF")) await p.openPdfBytes(new Uint8Array(await f.arrayBuffer()), f.name);
+        const p = at && at.kind === "pdf" && this.order.includes(at.key) ? at : await this.ensurePanelOfKind("pdf");
+        if (p && await this.confirmReplace(p, "open another PDF")) await p.openPdfBytes(new Uint8Array(await f.arrayBuffer()), f.name);
       } else if (n.endsWith(".dnote")) {
-        const p = at && at.kind === "nb" ? at : this.order.map((k) => this.panels[k]).find((q) => q.kind === "nb") || this.panels.nb;
-        if (await this.confirmReplace(p, "open another notebook")) { try { p.setNotebook(M.parseNotebook(await f.text()), f.name); } catch (err) { toast(err.message, 4000); } }
+        const p = at && at.kind === "nb" && this.order.includes(at.key) ? at : await this.ensurePanelOfKind("nb");
+        if (p && await this.confirmReplace(p, "open another notebook")) { try { p.setNotebook(M.parseNotebook(await f.text()), f.name); } catch (err) { toast(err.message, 4000); } }
       } else if (f.type.startsWith("image/")) {
         const p = at && at.hasPage ? at : this.active;
         if (p) await p.insertImageBlob(f);
@@ -254,20 +249,24 @@ export class App {
   isPristine(p) { return !p.dirty && !p.name && p.pages.length === 1 && !p.items.length; }
   settings() {
     const P = this.panels;
-    return { window: { layout: [...this.order], view: this.viewMode }, pdf: P.pdf.viewState(), pdf2: P.pdf2.viewState(), notebook: P.nb.viewState(), notebook2: P.nb2.viewState() };
+    return { window: { layout: [...this.order], view: this.viewMode, type: M.workspaceTypeOf(this.order) }, pdf: P.pdf.viewState(), pdf2: P.pdf2.viewState(), notebook: P.nb.viewState(), notebook2: P.nb2.viewState() };
   }
   nbPages(p) { p.finishEdit(); return p.pages.map((q) => ({ paper: q.paper, items: q.items.slice() })); }
-  collect() {
-    const P = this.panels;
-    return { pdf: P.pdf.workspaceData(), pdf2: P.pdf2.workspaceData(), notebook: this.nbPages(P.nb),
-      notebook2: this.order.includes("nb2") || !this.isPristine(P.nb2) ? this.nbPages(P.nb2) : null, settings: this.settings() };
+  /** What belongs to the workspace. Default: only the panels of the current structure (a PDF-only workspace has no notebook, and vice versa).
+   *  all: true (session backup) also includes panels that were taken out of the structure, so nothing is lost if the tab is reloaded. */
+  collect({ all = false } = {}) {
+    const P = this.panels, inc = (k) => all || this.order.includes(k);
+    return { pdf: inc("pdf") ? P.pdf.workspaceData() : null, pdf2: inc("pdf2") ? P.pdf2.workspaceData() : null,
+      notebook: inc("nb") ? this.nbPages(P.nb) : null,
+      notebook2: this.order.includes("nb2") || (all && !this.isPristine(P.nb2)) ? this.nbPages(P.nb2) : null,
+      settings: this.settings(), type: M.workspaceTypeOf(this.order) };
   }
   async saveWorkspace() {
     const busy = this.busy("Saving workspace…");
     try {
       const blob = await WS.writeWorkspace(this.collect());
       await this.saveBlob(blob, this.wsName || "workspace.dnws");
-      for (const p of Object.values(this.panels)) { p.dirty = false; p.ui(); }
+      for (const [k, p] of Object.entries(this.panels)) { if (this.order.includes(k)) p.dirty = false; p.ui(); }    // panels outside the workspace were not saved
     } catch (e) { console.error(e); toast("Could not save the workspace: " + (e.message || e), 5000); }
     finally { busy.done(); }
   }
@@ -308,11 +307,12 @@ export class App {
       if (!(await p.openPdfBytes(data.source, data.name, { workspace: data }))) throw new Error("The PDF in this workspace could not be opened.");
       await p.goto(Number.isInteger(view?.page) ? view.page : 0);
     }
-    P.nb.setNotebook(ws.notebook, null);
+    P.nb.setNotebook(ws.notebook || [{ paper: "lined", items: [] }], null);
     P.nb2.setNotebook(ws.notebook2 || [{ paper: "lined", items: [] }], null);
     for (const [key, view] of [["nb", st.notebook], ["nb2", st.notebook2]]) { if (Number.isInteger(view?.page)) await P[key].goto(view.page); }
     for (const [key, view] of [["pdf", st.pdf], ["pdf2", st.pdf2], ["nb", st.notebook], ["nb2", st.notebook2]]) P[key].restoreView(view);
-    let order = M.sanitizeLayout(win.layout);
+    // workspace type from the file's metadata; older files have none: their saved layout is used (PDF + Notebook when nothing is saved)
+    let order = M.layoutOfType(ws.type ?? ws.manifest?.workspace_type) || M.sanitizeLayout(win.layout);
     if (order.includes("nb2") && !ws.notebook2) order = [...M.DEFAULT_LAYOUT];
     this.order = order; this.viewMode = M.normalizeView(win.view ?? "both", order);
     for (const p of Object.values(P)) p.dirty = false;
@@ -329,7 +329,7 @@ export class App {
     // collecting the data closes any open text editor: never do that in the middle of typing (wait until the user is done)
     if (!force && Object.values(this.panels).some((p) => p.editing)) { this.scheduleAutosave(); return; }
     try {
-      const d = this.collect(), rec = { version: 1, saved: Date.now(), settings: d.settings, notebook: d.notebook, notebook2: d.notebook2 };
+      const d = this.collect({ all: true }), rec = { version: 1, saved: Date.now(), settings: d.settings, notebook: d.notebook, notebook2: d.notebook2 };
       const keep = new Set();
       for (const key of ["pdf", "pdf2"]) {
         const p = d[key];
