@@ -81,6 +81,14 @@ textarea.editor.note { border-color:rgba(0,0,0,.35); }
 .popup { position:fixed; z-index:50; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(0,0,0,.25); padding:10px; max-width:calc(100vw - 16px); overflow:auto; }
 .menu { display:flex; flex-direction:column; min-width:220px; }
 .mi { display:flex; align-items:center; gap:8px; border:0; background:transparent; padding:12px; font:inherit; text-align:left; border-radius:8px; cursor:pointer; }
+.tsep { width:1px; height:18px; background:var(--line); margin:0 3px; flex:none; }
+.hactions { display:inline-flex; align-items:center; gap:3px; }
+.barsbtn .chev { transition:transform .15s; transform:rotate(-90deg); } .barsbtn.open .chev { transform:none; }
+.phead .btn.small.icon-only { min-width:24px; padding:1px 4px; }
+.arrange .arow { display:flex; align-items:center; gap:6px; margin:6px 0; } .arrange .anum { width:18px; color:#64748b; text-align:center; }
+.arrange select { flex:1; min-height:30px; font:inherit; border:1px solid var(--line); border-radius:7px; padding:0 6px; background:#fff; } .arrange .btn.small { min-width:28px; }
+textarea.editor.node, textarea.editor.conn { resize:none; overflow:hidden; border-color:transparent; text-align:center; } textarea.editor.node { background:transparent !important; }
+.mindgrp { margin-left:2px; }
 .mh { padding:6px 12px 2px; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:#64748b; }
 .msep { height:1px; background:var(--line); margin:4px 0; }
 .shapegrid { display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; padding:2px; min-width:240px; }

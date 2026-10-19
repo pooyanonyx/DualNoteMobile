@@ -1,6 +1,6 @@
 // DualNote workspace file (.dnws): the whole session in ONE file - a ZIP archive with the same layout
 // as the Windows app writes, so workspaces open in both apps:
-//   manifest.json, settings.json, notebook.json, [notebook2.json],
+//   manifest.json, settings.json, notebook.json, [notebook2.json], [board.json, board2.json],
 //   pdf/original.pdf + pdf/annotations.json, [pdf2/...]
 import * as M from "./model.js";
 
@@ -20,13 +20,14 @@ async function pdfInfo(p) {
 }
 
 /** pdf/pdf2: null or {name, source: Uint8Array, pages: [[item,...],...]}; notebooks: [{paper, items}] ; returns a Blob. */
-export async function writeWorkspace({ pdf = null, pdf2 = null, notebook = null, notebook2 = null, settings = {}, type = null }) {
+export async function writeWorkspace({ pdf = null, pdf2 = null, notebook = null, notebook2 = null, board = null, board2 = null, settings = {}, type = null }) {
   const JSZip = globalThis.JSZip;
   const manifest = {
     format: WORKSPACE_FORMAT, version: WORKSPACE_VERSION, app: "DualNote (web)",
     saved: new Date().toISOString(),
     pdf: pdf ? await pdfInfo(pdf) : null, pdf2: pdf2 ? await pdfInfo(pdf2) : null,
     notebook_pages: notebook ? notebook.length : null, notebook2_pages: notebook2 ? notebook2.length : null,
+    board_items: board ? board.items.length : null, board2_items: board2 ? board2.items.length : null,
   };
   if (type) manifest.workspace_type = type;            // pdf | notebook | pdf+notebook | notebook+pdf (panels left to right)
   const zip = new JSZip();
@@ -34,6 +35,8 @@ export async function writeWorkspace({ pdf = null, pdf2 = null, notebook = null,
   zip.file("settings.json", JSON.stringify(settings));
   if (notebook) zip.file("notebook.json", M.notebookToJson(notebook));      // a PDF-only workspace has no notebook
   if (notebook2) zip.file("notebook2.json", M.notebookToJson(notebook2));
+  if (board) zip.file("board.json", M.boardToJson(board));                  // boards: one file each, only for the panels the workspace has
+  if (board2) zip.file("board2.json", M.boardToJson(board2));
   for (const [prefix, p] of [["pdf", pdf], ["pdf2", pdf2]]) {
     if (!p) continue;
     zip.file(`${prefix}/original.pdf`, toBytes(p.source), { compression: "STORE" });   // PDFs are already compressed
@@ -66,10 +69,12 @@ export async function readWorkspace(data) {
   try { const s = JSON.parse(await need("settings.json")); if (s && typeof s === "object" && !Array.isArray(s)) settings = s; } catch (e) {
     if (e.message.startsWith("The workspace")) throw e;
   }
-  const type = M.layoutOfType(manifest.workspace_type) ? manifest.workspace_type : null;      // absent in older files
-  const hasNb = !type || M.layoutOfType(type).includes("nb");
+  const type = M.layoutOfType(manifest.workspace_type) || manifest.workspace_type === "custom" ? manifest.workspace_type : null;      // absent in older files
+  const hasNb = !type || (type !== "custom" && M.layoutOfType(type).includes("nb"));
   const notebook = hasNb || zip.file("notebook.json") ? M.parseNotebook(await need("notebook.json")) : null;
   const notebook2 = zip.file("notebook2.json") ? M.parseNotebook(await need("notebook2.json")) : null;
+  const board = zip.file("board.json") ? M.parseBoard(await need("board.json")) : null;
+  const board2 = zip.file("board2.json") ? M.parseBoard(await need("board2.json")) : null;
   const loadPdf = async (prefix, info) => {
     if (!info || typeof info !== "object") throw new Error("The workspace manifest is corrupt.");
     const source = await need(`${prefix}/original.pdf`, "uint8array");
@@ -80,5 +85,5 @@ export async function readWorkspace(data) {
   };
   const pdf = manifest.pdf != null ? await loadPdf("pdf", manifest.pdf) : null;
   const pdf2 = manifest.pdf2 != null ? await loadPdf("pdf2", manifest.pdf2) : null;
-  return { manifest, settings, notebook, notebook2, pdf, pdf2, type };
+  return { manifest, settings, notebook, notebook2, board, board2, pdf, pdf2, type };
 }

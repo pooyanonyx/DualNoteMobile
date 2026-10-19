@@ -12,11 +12,15 @@ const TOOL_INFO = {
   hltext: ["Highlight", "Drag across PDF text to highlight whole words"], eraser: ["Eraser", "Drag over items to erase them"],
   text: ["Text", "Tap to add a text box"], note: ["Note", "Tap to stick a sticky note on the page"],
   shape: ["Shapes", "Pick a shape (line, arrow, rectangle, ellipse, triangle, ...) and draw it"],
+  node: ["Node", "Mind map: tap to add a node, drag to move it (Tab = child, Enter = sibling)"],
+  link: ["Link", "Mind map: drag from one node to another to connect them (drop on empty space = new node)"],
   pan: ["Hand", "Drag to scroll"],
 };
 const PDF_TOOLS = ["select", "pen", "mark", "hltext", "eraser", "text", "note", "shape", "pan"];
 const NB_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
-const GROUP_OF_TOOL = { pen: "draw", text: "draw", shape: "draw", mark: "mark", hltext: "hltext", note: "note" };
+const BOARD_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "node", "link", "pan"];
+const SEP_AFTER = new Set(["select", "eraser", "shape", "link"]);
+const GROUP_OF_TOOL = { pen: "draw", text: "draw", shape: "draw", node: "draw", link: "draw", mark: "mark", hltext: "hltext", note: "note" };
 const OLD_SHAPE_TOOLS = ["line", "arrow", "rect", "ellipse"];     // separate tools of older versions / workspaces -> Shapes tool
 const STYLE_TO_ITEM = { color: "color", width: "w", size: "size", alpha: "alpha", bright: "bright" };
 export function defaultGroups(color = "#d32f2f") {
@@ -38,12 +42,12 @@ export class Panel {
   constructor(app, key, kind, label) {
     this.app = app; this.key = key; this.kind = kind; this.label = label;
     this.name = null;                     // file name shown in the title
-    this.pages = kind === "nb" ? [{ paper: "lined", items: [] }] : [];
+    this.pages = kind === "nb" ? [{ paper: "lined", items: [] }] : kind === "board" ? [{ paper: "white", grid: false, items: [] }] : [];
     this.cur = 0; this.dirty = false; this.history = new M.History();
-    this.view = { scale: 1, tx: 0, ty: 0, fit: true };
+    this.view = { scale: 1, tx: 0, ty: 0, fit: kind !== "board", init: kind !== "board" };     // a board starts at 100 %, centred (see onResize)
     this.cw = 300; this.ch = 300; this.dpr = window.devicePixelRatio || 1;
     this.tool = "pen";
-    this.groups = defaultGroups(kind === "nb" ? "#1a1a1a" : "#d32f2f");
+    this.groups = defaultGroups(kind === "pdf" ? "#d32f2f" : "#1a1a1a");
     this.curStyle = { ...this.groups.draw };
     this.recent = [];
     this.selected = null; this.live = null; this.preview = null; this.action = null;
@@ -54,7 +58,10 @@ export class Panel {
     this.sizeJobs = new Map(); this.offs = null; this.docW = 595; this.docH = 842; this.vp = 0; this.vpLock = null; this.fling = 0;
     this.fmt = { dir: "ltr", align: "left" }; this.fmtKey = "";      // text direction / alignment used for new text
     this.shapeKind = "rect"; this.fillOn = false; this.fillKey = "";  // Shapes tool: active shape + Fill switch
+    this._bc = new WeakMap();
+    this.connStyle = "curve"; this.connArrow = true; this.nodeKind = "round"; this.mindKey = ""; this.linkTarget = null; this._nm = null;   // mind map defaults
     if (kind === "nb") { this.layout(); this.view.ty = 14; }
+    if (kind === "board") this.layout();
     this._raf = 0; this.barsOpen = true;
     this.buildDom();
     this.setTool("pen", true);
@@ -66,21 +73,28 @@ export class Panel {
   // ------------------------------------------------------------------ state
   get items() { return this.pages[this.cur]?.items ?? []; }
   get drawList() { return this.live ?? this.items; }
-  get hasPage() { return this.kind === "nb" || !!this.pdf; }
-  pageDims() { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : this.sizeOf(this.cur); }
+  get hasPage() { return this.kind !== "pdf" || !!this.pdf; }
+  get minZoom() { return this.kind === "board" ? 0.06 : 0.2; }
+  pageDims() { return this.sizeOf(this.cur); }
   continuous() { return true; }                                      // PDF and notebook share one continuous page column
   shown() { return this.continuous() ? this.vp : this.cur; }         // page number shown in the toolbar
   defSize() { return this.sizes[0] || this.sizes.find(Boolean) || [595, 842]; }
-  sizeOf(i) { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : (this.sizes[i] || this.defSize()); }
+  sizeOf(i) { return this.kind === "nb" ? [M.PAGE_W, M.PAGE_H] : this.kind === "board" ? [M.BOARD_W, M.BOARD_H] : (this.sizes[i] || this.defSize()); }
   snap() { return this.pages.map((p) => ({ paper: p.paper, items: p.items.slice() })); }
-  restoreSnap(s) { this.pages = s.map((p) => (this.kind === "nb" ? { paper: p.paper, items: p.items.slice() } : { items: p.items.slice() })); }
+  restoreSnap(s) {                                    // (a board keeps its current background / grid: those are settings, not undo steps)
+    this.pages = s.map((p) => (this.kind === "nb" ? { paper: p.paper, items: p.items.slice() }
+      : this.kind === "board" ? { paper: this.pages[0]?.paper || "white", grid: !!this.pages[0]?.grid, items: p.items.slice() } : { items: p.items.slice() }));
+  }
 
   // -------------------------------------------------------------------- DOM
   buildDom() {
     const mk = (cls) => el("div", { class: cls });
     this.titleEl = el("span", { class: "ptitle" });
-    this.barsBtn = el("button", { class: "btn small", type: "button", onclick: () => this.setBars(!this.barsOpen), title: "Show or hide this panel's toolbars" });
-    const head = el("header", { class: "phead" }, this.titleEl, this.barsBtn);
+    // The toggle is an icon button with a clear on / off state; undo / redo live next to it so they stay reachable while the toolbars are hidden.
+    this.barsBtn = el("button", { class: "btn small barsbtn", type: "button", "aria-expanded": "true", onclick: () => this.setBars(!this.barsOpen), title: "Show or hide this panel's toolbars" },
+      icon("tools"), el("span", { class: "lbl" }, "Toolbars"), icon("chevdown", "tiny chev"));
+    this.hactions = el("span", { class: "hactions" }, this.barsBtn);
+    const head = el("header", { class: "phead" }, this.titleEl, this.hactions);
 
     this.fileInput = el("input", { type: "file", hidden: true, onchange: () => this.onFile() });
     this.imgInput = el("input", { type: "file", accept: "image/*", hidden: true, onchange: () => this.onImageFile() });
@@ -94,6 +108,12 @@ export class Panel {
       this.b.open = b("open", "Open", "Open a PDF", () => this.pickFile(".pdf,application/pdf"));
       this.b.save = b("save", "Save PDF", "Save a copy of the PDF with your annotations", () => this.saveAnnotated());
       fileBar.append(this.b.open, this.b.save);
+    } else if (this.kind === "board") {
+      this.b.new = b("plus", "New", "New board", () => this.newBoard());
+      this.b.open = b("open", "Open", "Open a board (.dnboard)", () => this.pickFile(".dnboard,application/json,.json"));
+      this.b.save = b("save", "Save", "Save the board (.dnboard)", () => this.saveBoard());
+      this.b.export = b("pdf", "PDF", "Export the board as a PDF", () => this.exportBoard());
+      fileBar.append(this.b.new, this.b.open, this.b.save, this.b.export);
     } else {
       this.b.new = b("plus", "New", "New notebook", () => this.newNotebook());
       this.b.open = b("open", "Open", "Open a notebook (.dnote)", () => this.pickFile(".dnote,application/json,.json"));
@@ -103,9 +123,11 @@ export class Panel {
     }
     this.b.undo = b("undo", "", "Undo (Ctrl+Z)", () => this.undo());
     this.b.redo = b("redo", "", "Redo (Ctrl+Y)", () => this.redo());
+    for (const u of [this.b.undo, this.b.redo]) u.classList.add("small", "icon-only");
+    this.hactions.prepend(this.b.undo, this.b.redo);
     this.b.paste = b("paste", "Paste", "Paste an image (e.g. a screenshot) or text", () => this.app.pasteButton(this));
     this.b.image = b("image", "Image", "Insert an image from a file or the camera", () => this.imgInput.click());
-    fileBar.append(el("span", { class: "gap" }), this.b.undo, this.b.redo, el("span", { class: "gap" }), this.b.paste, this.b.image);
+    fileBar.append(el("span", { class: "gap" }), this.b.paste, this.b.image);
 
     const pageBar = mk("bar");
     this.b.prev = b("prev", "", "Previous page", () => this.goto(this.cur - 1));
@@ -116,7 +138,12 @@ export class Panel {
     this.b.zout = b("minus", "", "Zoom out", () => this.zoomBy(1 / 1.25));
     this.b.zin = b("plus", "", "Zoom in", () => this.zoomBy(1.25));
     this.b.fit = b("fit", "Fit", "Fit page to width", () => this.fitView());
-    pageBar.append(this.b.prev, this.pageInput, this.pageCount, this.b.next, el("span", { class: "gap" }), this.b.zout, this.b.zin, this.b.fit);
+    if (this.kind === "board") {                    // a board is one big canvas: zoom, fit, background, grid (no page controls)
+      this.b.fit.title = "Fit all content in view";
+      this.bgBtn = el("button", { class: "btn", type: "button", title: "Switch between a whiteboard and a blackboard", onclick: () => this.toggleBoardBg() }, icon("sun"), el("span", { class: "lbl" }, "White"));
+      this.gridBtn = el("button", { class: "btn", type: "button", "aria-pressed": "false", title: "Show or hide the dotted grid", onclick: () => this.toggleGrid() }, icon("dots"), el("span", { class: "lbl" }, "Grid"));
+      pageBar.append(this.b.zout, this.b.zin, this.b.fit, el("span", { class: "gap" }), this.bgBtn, this.gridBtn);
+    } else pageBar.append(this.b.prev, this.pageInput, this.pageCount, this.b.next, el("span", { class: "gap" }), this.b.zout, this.b.zin, this.b.fit);
     if (this.kind === "nb") {
       this.b.add = b("plus", "Page", "Insert a new page after this one", () => this.addPage());
       this.b.del = b("trash", "", "Delete this page", () => this.deletePage());
@@ -129,7 +156,7 @@ export class Panel {
 
     const toolBar = mk("bar tools");
     this.toolBtns = {};
-    for (const k of (this.kind === "pdf" ? PDF_TOOLS : NB_TOOLS)) {
+    for (const k of (this.kind === "pdf" ? PDF_TOOLS : this.kind === "board" ? BOARD_TOOLS : NB_TOOLS)) {
       let x;
       if (k === "shape") {          // one button for all shapes: shows the active shape, opens the shape menu
         this.shapeIcon = el("span", { class: "shico" }, icon(this.shapeKind));
@@ -141,6 +168,7 @@ export class Panel {
           "aria-pressed": "false", onclick: () => this.setTool(k) }, icon(k), el("span", { class: "lbl" }, TOOL_INFO[k][0]));
       }
       this.toolBtns[k] = x; toolBar.append(x);
+      if (SEP_AFTER.has(k)) toolBar.append(el("span", { class: "tsep" }));            // group: pointer | draw | text & shapes | mind map | hand
     }
     this.fillBtn = el("button", { class: "btn tool fillbtn", type: "button", "aria-label": "Fill", "aria-pressed": "false", disabled: true,
       title: "Fill closed shapes with the colour", onclick: () => this.toggleFill() }, icon("fill"), el("span", { class: "lbl" }, "Fill"));
@@ -161,7 +189,8 @@ export class Panel {
     this.fmtGroup = el("span", { class: "fmtgrp", role: "group", "aria-label": "Text direction and alignment", hidden: true },
       F.ltr, F.rtl, el("span", { class: "fsep" }), F.left, F.center, F.right);
     for (const ev of ["pointerdown", "mousedown"]) this.fmtGroup.addEventListener(ev, (e) => e.preventDefault());   // keep the text cursor in the editor
-    toolBar.append(this.fmtGroup, el("span", { class: "gap" }), this.colorBtn, this.brushBtn);
+    this.buildMindGroup();
+    toolBar.append(this.fmtGroup, this.mindGroup, el("span", { class: "gap" }), this.colorBtn, this.brushBtn);
 
     this.bars = el("div", { class: "bars" }, fileBar, pageBar, toolBar);
 
@@ -169,7 +198,7 @@ export class Panel {
     this.ctx = this.canvas.getContext("2d");
     this.ta = el("textarea", { class: "editor", hidden: true, rows: 1, dir: "auto", spellcheck: false, autocapitalize: "off",
       oninput: () => this.positionEditor(), onblur: () => this.finishEdit(),
-      onkeydown: (e) => { if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); this.finishEdit(); } e.stopPropagation(); } });
+      onkeydown: (e) => this.onEditorKey(e) });
     this.msg = el("div", { class: "msg" });
     this.stage = el("div", { class: "stage", tabIndex: -1 }, this.canvas, this.ta, this.msg);
     this.body = el("div", { class: "pbody" }, this.stage, this.bars);    // bars overlay the stage (position:absolute), they take no layout space
@@ -190,13 +219,13 @@ export class Panel {
   setBars(open) {
     this.barsOpen = open;
     this.bars.hidden = !open;
-    this.barsBtn.textContent = open ? "Toolbars ▾" : "Toolbars ▸";   // the bars float over the page area: nothing is resized or moved
+    this.barsBtn.classList.toggle("on", open); this.barsBtn.classList.toggle("open", open); this.barsBtn.setAttribute("aria-expanded", String(open));   // (the bars float over the page: nothing is resized or moved)
   }
 
   // ------------------------------------------------------------------- tools
   setTool(tool, silent = false) {
     this.finishEdit();
-    this.tool = tool;
+    this.tool = tool; this.linkTarget = null;
     for (const [k, x] of Object.entries(this.toolBtns)) { x.classList.toggle("on", k === tool); x.setAttribute("aria-pressed", String(k === tool)); }
     this.stage.dataset.tool = tool;
     if (tool !== "select" && this.selected !== null) this.selected = null;
@@ -252,19 +281,22 @@ export class Panel {
     if (this.root.hidden || r.width === 0 || r.height === 0) return;     // hidden panel (layout switch): keep its view exactly as it is
     this.cw = Math.max(50, Math.round(r.width)); this.ch = Math.max(50, Math.round(r.height));
     this.dpr = window.devicePixelRatio || 1;
+    if (this.pendingCenter) { const c = this.pendingCenter; this.pendingCenter = null; this.applyCenter(c); }
     this.canvas.width = Math.round(this.cw * this.dpr); this.canvas.height = Math.round(this.ch * this.dpr);
     this.canvas.style.width = this.cw + "px"; this.canvas.style.height = this.ch + "px";
     this.root.classList.toggle("narrow", r.width < 700);      // icons only, so the toolbars use fewer rows
-    if (this.view.fit && this.hasPage) this.fitView(false); else this.clampView();
+    if (this.kind === "board" && !this.view.init && this.offs) { this.view.init = true; this.fitContent(false); }
+    else if (this.view.fit && this.hasPage) this.fitView(false); else this.clampView();
     this.positionEditor();
     this.render(); this.scheduleRaster();
   }
   fitView(userAction = true) {
+    if (this.kind === "board") { this.fitContent(userAction); return; }
     const doc = this.continuous() && this.offs, v = this.view;
     const w = doc ? this.sizeOf(this.vp)[0] : this.pageDims()[0];
     const margin = this.cw < 500 ? 6 : 14;
     const topDoc = doc ? -v.ty / v.scale : 0;                          // document position at the top edge of the view (kept when the width changes)
-    v.scale = clamp((this.cw - 2 * margin) / w, 0.2, 6);
+    v.scale = clamp((this.cw - 2 * margin) / w, this.minZoom, 6);
     v.fit = true;
     if (doc) {
       v.tx = (this.cw - this.docW * v.scale) / 2;
@@ -286,7 +318,7 @@ export class Panel {
     v.ty = ph <= this.ch - 16 ? clamp(v.ty, 8, this.ch - ph - 8) : clamp(v.ty, this.ch - ph - m, m);
   }
   zoomAt(factor, cx, cy) {
-    const old = this.view.scale, s = clamp(old * factor, 0.2, 6), k = s / old;
+    const old = this.view.scale, s = clamp(old * factor, this.minZoom, 6), k = s / old;
     this.view.tx = cx - (cx - this.view.tx) * k; this.view.ty = cy - (cy - this.view.ty) * k;
     this.view.scale = s; this.view.fit = false;
     this.clampView(); this.positionEditor(); this.render(); this.scheduleRaster();
@@ -537,7 +569,7 @@ export class Panel {
     const ctx = this.ctx, d = this.dpr;
     ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.fillStyle = "#c9ccd1"; ctx.fillRect(0, 0, this.cw, this.ch);
-    this.updateFmtUi(); this.updateFillUi();
+    this.updateFmtUi(); this.updateFillUi(); this.updateMindUi();
     this.msg.hidden = this.hasPage;
     if (!this.hasPage) return;
     this.drawDoc(ctx);
@@ -553,15 +585,23 @@ export class Panel {
       const [w, h] = this.sizeOf(i), isCur = i === this.cur;
       ctx.save();
       ctx.translate((this.docW - w) / 2, this.offs[i]);
-      ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = 8 / s; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.shadowColor = "transparent";
-      if (this.kind === "nb") R.drawPaper(ctx, w, h, this.pages[i].paper);
+      const board = this.kind === "board", page = this.pages[i];
+      if (!board) { ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = 8 / s; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.shadowColor = "transparent"; }   // (no soft shadow around a huge board: blurring a 4000 px rectangle every frame is far too slow)
+      if (this.kind === "nb") R.drawPaper(ctx, w, h, page.paper);
+      else if (board) R.drawBoardBg(ctx, w, h, page, [-v.tx / s, -v.ty / s, (this.cw - v.tx) / s, (this.ch - v.ty) / s]);
       else { const r = this.rasters.get(i); if (r) { ctx.imageSmoothingQuality = "high"; ctx.drawImage(r.canvas, 0, 0, w, h); } }
-      const list = isCur ? this.drawList : this.pages[i].items;
+      const list = isCur ? this.drawList : page.items;
       if (list.length || (isCur && this.preview)) {
         ctx.save();
         ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
-        for (let k = 0; k < list.length; k++) R.drawItem(ctx, list[k], { skipText: isCur && !!this.editing && this.editing.idx === k });
-        if (isCur && this.preview) for (const p of [].concat(this.preview)) R.drawItem(ctx, p);
+        const o = board ? { theme: R.boardTheme(page.paper), bg: R.BOARD_COLORS[page.paper], nodes: this.nodeMapFor(list, isCur ? this.preview : null) } : {};
+        const vis = board ? [-v.tx / s, -v.ty / s, (this.cw - v.tx) / s, (this.ch - v.ty) / s] : null;
+        for (let k = 0; k < list.length; k++) {
+          if (vis && list[k].t !== "conn") { const bb = this.boundsOf(list[k]); if (bb[2] < vis[0] || bb[0] > vis[2] || bb[3] < vis[1] || bb[1] > vis[3]) continue; }   // off-screen items are skipped
+          R.drawItem(ctx, list[k], { ...o, skipText: isCur && !!this.editing && this.editing.idx === k });
+        }
+        if (isCur && this.preview) for (const p of [].concat(this.preview)) R.drawItem(ctx, p, o);
+        if (isCur && this.linkTarget && o.nodes) { const n = o.nodes.get(this.linkTarget); if (n) { ctx.strokeStyle = "#1976d2"; ctx.lineWidth = 3; ctx.setLineDash([6, 4]); ctx.strokeRect(Math.min(n.x1, n.x2) - 5, Math.min(n.y1, n.y2) - 5, Math.abs(n.x2 - n.x1) + 10, Math.abs(n.y2 - n.y1) + 10); } }
         ctx.restore();
       }
       if (isCur && this.selected !== null && list[this.selected]) this.drawSelection(ctx, list[this.selected]);
@@ -573,7 +613,18 @@ export class Panel {
   }
   geom(i, list = this.drawList) {
     const d = list[i];
-    return d.t === "text" ? R.textBox(d) : M.geomBox(d);
+    return d.t === "text" ? R.textBox(d) : M.geomBox(d, null, d.t === "conn" ? this.nodeMapFor(list) : null);
+  }
+  boundsOf(d) { let b = this._bc.get(d); if (!b) { b = R.itemBounds(d, null); this._bc.set(d, b); } return b; }     // (items are replaced, not edited in place, so this cache stays valid)
+  /** id -> node for the connectors of this item list (cached per list; extra = items being previewed, e.g. a node still being typed). */
+  nodeMapFor(list, extra = null) {
+    const ex = extra ? [].concat(extra) : [];
+    if (this.kind !== "board" || !(M.hasConns(list) || M.hasConns(ex))) return null;
+    const c = this._nm;
+    if (c && c.list === list && c.extra === extra) return c.map;
+    const map = M.nodeIndex(list); for (const d of ex) if (d.t === "node" && d.id) map.set(d.id, d);
+    this._nm = { list, extra, map };
+    return map;
   }
   selInfo(d, i) {
     const g = this.geom(i), e = 3 / Math.max(1, this.view.scale * 0.6) + M.halfWidth(d);      // handle gap in page units
@@ -584,6 +635,11 @@ export class Panel {
     const i = this.selected, { g, e } = this.selInfo(d, i), s = this.view.scale;
     ctx.save();
     ctx.strokeStyle = "#1976d2"; ctx.lineWidth = 1.4 / s; ctx.setLineDash([5 / s, 4 / s]);
+    if (d.t === "conn") {                                   // a connector: highlight its path
+      const gg = M.connGeometry(d, this.nodeMapFor(this.drawList) || new Map());
+      if (gg) { ctx.setLineDash([]); ctx.strokeStyle = "rgba(25,118,210,.45)"; ctx.lineWidth = d.w + 8 / s; ctx.beginPath(); gg.pts.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); }
+      ctx.restore(); return;
+    }
     if (d.t === "line" || d.t === "arrow") ctx.strokeRect(g[0] - e, g[1] - e, g[2] - g[0] + 2 * e, g[3] - g[1] + 2 * e);
     else ctx.strokeRect(g[0] - e, g[1] - e, g[2] - g[0] + 2 * e, g[3] - g[1] + 2 * e);
     ctx.restore();
@@ -615,7 +671,7 @@ export class Panel {
   hitItem(list, i, p, tol) {
     const d = list[i];
     if (d.t === "text") { const b = R.textBox(d); return p.x >= b[0] - tol && p.x <= b[2] + tol && p.y >= b[1] - tol && p.y <= b[3] + tol; }
-    return M.hitTest(d, p.x, p.y, tol);
+    return M.hitTest(d, p.x, p.y, tol, d.t === "conn" ? this.nodeMapFor(list) : null);
   }
   hit(p, list = this.items) {
     const tol = this.tol();
@@ -625,6 +681,7 @@ export class Panel {
 
   // ------------------------------------------------------------- committing
   commit(newItems, { keepSel = false, select = null } = {}) {
+    if (this.kind === "board") newItems = M.pruneOrphans(newItems);     // a deleted node takes its connectors with it
     this.history.push(this.snap(), this.cur);
     this.pages[this.cur].items = newItems;
     this.live = null; this.preview = null;
@@ -706,7 +763,7 @@ export class Panel {
     const [a, b] = [...this.pointers.values()], g = this.gesture;
     if (!b) return;
     const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2, dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-    this.view.scale = clamp(g.scale * dist / g.dist, 0.2, 6); this.view.fit = false;
+    this.view.scale = clamp(g.scale * dist / g.dist, this.minZoom, 6); this.view.fit = false;
     this.view.tx = cx - g.wx * this.view.scale; this.view.ty = cy - g.wy * this.view.scale;
     this.clampView(); this.positionEditor(); this.render(); this.scheduleRaster();
   }
@@ -740,6 +797,18 @@ export class Panel {
     if (t === "shape" || t === "hltext") { this.action = { type: "shape", p0: this.clampP(p), l0: l, moved: false }; return; }
     if (t === "eraser") { this.live = this.items.slice(); this.action = { type: "erase" }; this.eraseAt(p); return; }
     if (t === "text" || t === "note") { this.action = { type: "tap", p, l0: l, moved: false }; return; }
+    if (t === "node") {                                       // tap empty space = new node; an item that is hit is selected / moved like with Select
+      const idx = this.hit(p);
+      if (idx !== null) { this.selected = idx; this.action = { type: "move", idx, p0: p, orig: this.items[idx], moved: false, l0: l }; this.render(); }
+      else { this.selected = null; this.action = { type: "nodetap", p, l0: l, moved: false }; this.render(); }
+      return;
+    }
+    if (t === "link") {                                       // drag from a node; on empty space the finger scrolls
+      const idx = this.hit(p), d = idx !== null ? this.items[idx] : null;
+      if (d && d.t === "node") { this.selected = idx; this.action = { type: "link", from: d.id, l0: l }; this.render(); }
+      else this.action = { type: "pan", last: l };
+      return;
+    }
   }
   toolMove(e, l, evs) {
     const a = this.action;
@@ -777,6 +846,13 @@ export class Panel {
       this.render(); return;
     }
     if (a.type === "tap" && Math.hypot(l.x - a.l0.x, l.y - a.l0.y) > 8) a.moved = true;
+    if (a.type === "nodetap" && Math.hypot(l.x - a.l0.x, l.y - a.l0.y) > 8) a.moved = true;
+    if (a.type === "link") {
+      const c = this.clampP(p), idx = this.hit(c), tn = idx !== null && this.items[idx].t === "node" && this.items[idx].id !== a.from ? this.items[idx].id : null;
+      this.linkTarget = tn; const st = this.curStyle;
+      this.preview = [{ t: "conn", from: a.from, toPt: [c.x, c.y], style: this.connStyle, arrow: false, color: st.color, w: Math.max(1.5, st.width) }];
+      this.render();
+    }
   }
   toolUp(e, l) {
     const a = this.action; this.action = null;
@@ -819,6 +895,8 @@ export class Panel {
       return;
     }
     if (a.type === "tap" && !a.moved) this.tapCreate(a.p);
+    if (a.type === "nodetap" && !a.moved) this.createNodeAt(a.p);
+    if (a.type === "link") this.finishLink(a, this.clampP(p));
   }
   deleteSelected() {
     if (this.selected === null || this.editing || !this.items[this.selected]) return false;
@@ -826,12 +904,12 @@ export class Panel {
     this.commit(items); return true;
   }
   deselect() { if (this.selected !== null) { this.selected = null; this.render(); } }
-  async saveSeparately() { return this.kind === "pdf" ? this.saveAnnotated() : this.saveNotebook(); }
+  async saveSeparately() { return this.kind === "pdf" ? this.saveAnnotated() : this.kind === "board" ? this.saveBoard() : this.saveNotebook(); }
   tapSelect(idx, l) {                       // double-tap on text / note edits it
     const now = performance.now(), prev = this.lastTap;
     if (idx !== null && idx !== undefined && prev && prev.idx === idx && now - prev.t < 450) {
       const d = this.items[idx];
-      if (d && (d.t === "text" || d.t === "note")) { this.lastTap = null; this.startEdit(idx); return; }
+      if (d && (d.t === "text" || d.t === "note" || d.t === "node" || d.t === "conn")) { this.lastTap = null; this.startEdit(idx); return; }   // double-tap edits text / node / connector label
     }
     this.lastTap = idx === null ? null : { idx, t: now };
     this.app.onSelect?.(this);
@@ -926,14 +1004,16 @@ export class Panel {
     this.shapeBtn.title = "Shapes - active: " + k.label;
   }
   fillTarget() {                                     // a selected closed shape (the Fill button then edits that shape)
-    if (this.tool === "select" && this.selected !== null) { const d = this.items[this.selected]; if (d && M.isClosedShape(d)) return d; }
+    if ((this.tool === "select" || this.tool === "node" || this.tool === "link") && this.selected !== null) { const d = this.items[this.selected]; if (d && M.isClosedShape(d)) return d; }
     return null;
   }
-  fillEnabled() { return !!this.fillTarget() || (this.tool === "shape" && M.shapeKindInfo(this.shapeKind).closed); }
+  fillEnabled() { return !!this.fillTarget() || this.tool === "node" || (this.tool === "shape" && M.shapeKindInfo(this.shapeKind).closed); }
   updateFillUi() {
-    const en = this.fillEnabled(), d = this.fillTarget(), on = en && (d ? !!d.fill : this.fillOn), key = en + "|" + on;
+    const en = this.fillEnabled(), d = this.fillTarget(), on = en && (d ? !!d.fill : this.fillOn);
+    const sel = (this.tool === "select" || this.tool === "node" || this.tool === "link") ? this.selItem() : null;
+    const show = this.tool === "shape" || this.tool === "node" || (!!sel && (M.isClosedShape(sel) || sel.t === "line" || sel.t === "arrow")), key = show + "|" + en + "|" + on;
     if (key === this.fillKey) return;
-    this.fillKey = key;
+    this.fillKey = key; this.fillBtn.hidden = !show;               // contextual: only next to shapes (disabled for open shapes such as lines)
     this.fillBtn.disabled = !en; this.fillBtn.classList.toggle("on", on); this.fillBtn.setAttribute("aria-pressed", String(on));
     this.fillBtn.title = en ? `Fill closed shapes with the colour: ${on ? "on" : "off"}` : "Fill applies to closed shapes (rectangle, ellipse, ...); lines have no interior";
   }
@@ -948,12 +1028,217 @@ export class Panel {
     this.fillKey = ""; this.updateFillUi(); this.render();
   }
 
+  // ------------------------------------------------------------------ board
+  applyCenter([cx, cy]) { const v = this.view; v.tx = this.cw / 2 - cx * v.scale; v.ty = this.ch / 2 - cy * v.scale; this.clampView(); }
+  /** 'Fit': show all content (or the middle of an empty board at 100 %). */
+  fitContent(userAction = true) {
+    const v = this.view, b = R.contentBounds(this.pages[0]?.items || []);
+    if (!b) { v.scale = clamp(1, this.minZoom, 6); this.applyCenter([M.BOARD_W / 2, M.BOARD_H / 2]); }
+    else {
+      const m = 50, bw = Math.max(1, b[2] - b[0]), bh = Math.max(1, b[3] - b[1]);
+      v.scale = clamp(Math.min((this.cw - 2 * m) / bw, (this.ch - 2 * m) / bh, 1.5), this.minZoom, 6);
+      this.applyCenter([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]);
+    }
+    v.fit = false; this.render();
+  }
+  boardIsDark() { return this.pages[0]?.paper === "black"; }
+  /** New text / pen ink follows the board: black ink on a whiteboard, white ink on a blackboard (only when the default ink was in use). */
+  syncInkToBg() {
+    const dark = this.boardIsDark(), from = dark ? "#1a1a1a" : "#f2f2f2", to = dark ? "#f2f2f2" : "#1a1a1a";
+    if (this.groups.draw.color === from) this.groups.draw.color = to;
+    if (this.curStyle.color === from && GROUP_OF_TOOL[this.tool] === "draw") this.curStyle.color = to;
+    this.updateColorDot();
+  }
+  setBoardBg(paper) {
+    const pg = this.pages[0];
+    if (!pg || pg.paper === paper || !M.BOARD_BGS.includes(paper)) return;
+    pg.paper = paper; this.syncInkToBg();
+    this.dirty = true; this.app.onChange(this); this.ui(); this.render();     // nothing on the board is modified: only how it is drawn
+  }
+  toggleBoardBg() { this.setBoardBg(this.boardIsDark() ? "white" : "black"); }
+  toggleGrid() { const pg = this.pages[0]; pg.grid = !pg.grid; this.dirty = true; this.app.onChange(this); this.ui(); this.render(); }
+  updateBoardUi() {
+    if (this.kind !== "board" || !this.bgBtn) return;
+    const dark = this.boardIsDark();
+    this.bgBtn.replaceChildren(icon(dark ? "moon" : "sun"), el("span", { class: "lbl" }, dark ? "Black" : "White"));
+    this.bgBtn.classList.toggle("on", dark);
+    this.gridBtn.classList.toggle("on", !!this.pages[0]?.grid); this.gridBtn.setAttribute("aria-pressed", String(!!this.pages[0]?.grid));
+  }
+  boardData() { this.finishEdit(); const pg = this.pages[0]; return { paper: pg.paper, grid: !!pg.grid, items: pg.items.slice() }; }
+  setBoard(data, name) {
+    this.finishEdit();
+    this.pages = [{ paper: data.paper, grid: !!data.grid, items: data.items.slice() }];
+    this.name = name; this.history.clear(); this.dirty = false; this.cur = 0; this.selected = null;
+    this.syncInkToBg();
+    this.view.init = !this.root.hidden;                                   // a hidden panel is centred when it is first shown
+    this.showPage(0);
+    this.app.onChange(this, { clean: true });
+  }
+  async newBoard() {
+    if (!(await this.app.confirmReplace(this, "start a new board"))) return;
+    this.setBoard({ paper: "white", grid: false, items: [] }, null);
+  }
+  async saveBoard() {
+    this.finishEdit();
+    const base = (this.name || "board").replace(/\.dnboard$/i, "");
+    await this.app.saveBlob(new Blob([M.boardToJson(this.pages[0])], { type: "application/json" }), `${base}.dnboard`);
+    this.dirty = false; this.app.onChange(this, { clean: true }); this.ui();
+    return true;
+  }
+  async exportBoard() {
+    this.finishEdit();
+    const pg = this.pages[0];
+    if (!pg.items.length) { toast("The board is empty - nothing to export."); return; }
+    let printFriendly = false;
+    if (pg.paper === "black") {                                             // dark board: print on the dark background, or white paper with dark ink?
+      const choice = await dialog({ title: "Export the blackboard as PDF",
+        content: el("div", {}, el("p", {}, "As shown keeps the dark background. Print-friendly uses a white background and turns light ink dark, which saves ink when printed.")),
+        buttons: [{ label: "Cancel", value: "cancel" }, { label: "Print-friendly (white)", value: "print" }, { label: "As shown (dark)", value: "shown", primary: true }] });
+      if (!choice || choice === "cancel") return;
+      printFriendly = choice === "print";
+    }
+    const busy = this.app.busy("Exporting PDF…");
+    try {
+      const bytes = await PDF.exportBoardPdf(pg, { printFriendly });
+      await this.app.saveBlob(new Blob([bytes], { type: "application/pdf" }), `${(this.name || "board").replace(/\.dnboard$/i, "")}.pdf`);
+    } catch (e) { console.error(e); toast("Could not export the PDF: " + (e.message || e), 5000); }
+    finally { busy.done(); }
+  }
+
+  // ------------------------------------------------------------------ mind map
+  buildMindGroup() {
+    const mb = (ic, title, fn) => el("button", { class: "btn tool fmt", type: "button", title, "aria-label": title, "aria-pressed": "false", onclick: fn }, icon(ic));
+    const sep = () => el("span", { class: "fsep" });
+    this.mindBtns = {
+      child: mb("child", "Add a child node to the selected node (Tab)", () => this.addChild()),
+      sibling: mb("sibling", "Add a sibling node next to the selected node (Enter)", () => this.addSibling()),
+      branch: mb("branchdel", "Delete the selected node and everything below it (Shift+Delete)", () => this.deleteBranch()),
+      curve: mb("curve", "Curved connectors", () => this.setConn({ style: "curve" })),
+      line: mb("line", "Straight connectors", () => this.setConn({ style: "line" })),
+      elbow: mb("elbow", "Elbow connectors", () => this.setConn({ style: "elbow" })),
+      arrow: mb("arrow", "Arrow head on connectors", () => this.setConn({ arrow: !this.mindState().arrow })),
+      round: mb("node", "Rounded nodes", () => this.setNodeKind("round")),
+      ellipse: mb("ellipse", "Oval nodes", () => this.setNodeKind("ellipse")),
+      rect: mb("rect", "Square nodes", () => this.setNodeKind("rect")),
+    };
+    const B = this.mindBtns;
+    this.mindGroup = el("span", { class: "fmtgrp mindgrp", role: "group", "aria-label": "Mind map", hidden: true },
+      B.child, B.sibling, B.branch, sep(), B.curve, B.line, B.elbow, B.arrow, sep(), B.round, B.ellipse, B.rect);
+    for (const ev of ["pointerdown", "mousedown"]) this.mindGroup.addEventListener(ev, (e) => e.preventDefault());
+  }
+  selItem() { return this.selected !== null ? (this.items[this.selected] || null) : null; }
+  selNode() { const d = this.selItem(); return d && d.t === "node" ? d : null; }
+  mindState() {
+    const d = this.selItem(), node = d && d.t === "node" ? d : null, conn = d && d.t === "conn" ? d : null;
+    return { show: this.kind === "board" && (this.tool === "node" || this.tool === "link" || !!node || !!conn), node, conn,
+      style: conn ? conn.style : this.connStyle, arrow: conn ? conn.arrow !== false : this.connArrow, kind: node ? node.kind : this.nodeKind };
+  }
+  updateMindUi() {
+    if (this.kind !== "board") return;
+    const m = this.mindState(), hasParent = !!m.node && this.items.some((c) => c.t === "conn" && c.to === m.node.id);
+    const key = [m.show, !!m.node, hasParent, !!m.conn, m.style, m.arrow, m.kind].join("|");
+    if (key === this.mindKey) return;
+    this.mindKey = key; this.mindGroup.hidden = !m.show;
+    const B = this.mindBtns;
+    B.child.disabled = !m.node; B.sibling.disabled = !hasParent; B.branch.disabled = !m.node;
+    const on = { curve: m.style === "curve", line: m.style === "line", elbow: m.style === "elbow", arrow: m.arrow, round: m.kind === "round", ellipse: m.kind === "ellipse", rect: m.kind === "rect" };
+    for (const [k, v] of Object.entries(on)) { B[k].classList.toggle("on", v); B[k].setAttribute("aria-pressed", String(v)); }
+  }
+  setConn(patch) {                                   // connector look: the selected connector, or all connectors of the selected node; also the default for new ones
+    if ("style" in patch) this.connStyle = patch.style;
+    if ("arrow" in patch) this.connArrow = patch.arrow;
+    const d = this.selItem(); let items = null;
+    if (d && d.t === "conn") { items = this.items.slice(); items[this.selected] = { ...d, ...patch }; }
+    else if (d && d.t === "node") items = this.items.map((c) => (c.t === "conn" && (c.from === d.id || c.to === d.id) ? { ...c, ...patch } : c));
+    if (items && JSON.stringify(items) !== JSON.stringify(this.items)) this.commit(items, { keepSel: true });
+    this.mindKey = ""; this.updateMindUi(); this.render();
+  }
+  setNodeKind(k) {
+    this.nodeKind = k;
+    const d = this.selNode();
+    if (d && d.kind !== k) { const items = this.items.slice(); items[this.selected] = { ...d, kind: k }; this.commit(items, { keepSel: true }); }
+    this.mindKey = ""; this.updateMindUi(); this.render();
+  }
+  nodeProto(x1, y1, w = 120, h = 48) {
+    const st = this.curStyle, f = this.fmt, r2 = (v) => Math.round(v * 100) / 100;
+    x1 = clamp(x1, 10, M.BOARD_W - w - 10); y1 = clamp(y1, 10, M.BOARD_H - h - 10);
+    const n = { t: "node", id: M.newId(), kind: this.nodeKind, x1: r2(x1), y1: r2(y1), x2: r2(x1 + w), y2: r2(y1 + h), text: "", color: st.color,
+      w: Math.max(1.5, st.width), size: st.size, dir: f.dir, align: "center", ...this.styleExtra() };
+    if (this.fillOn) n.fill = st.color;
+    return n;
+  }
+  connProto(from, to) { const st = this.curStyle; return { t: "conn", from, to, style: this.connStyle, arrow: this.connArrow, color: st.color, w: Math.max(1.5, st.width) }; }
+  createNodeAt(p) { const n = this.nodeProto(p.x - 60, p.y - 24); this.startEdit(null, n, null); }
+  revealBox(x1, y1, x2, y2) {                        // scroll just enough to see a box
+    const v = this.view, s = v.scale, [ox, oy] = this.origin(), m = 50;
+    const L = v.tx + (ox + x1) * s, T = v.ty + (oy + y1) * s + 0, Rr = v.tx + (ox + x2) * s, Bb = v.ty + (oy + y2) * s;
+    if (L < m) v.tx += m - L; else if (Rr > this.cw - m) v.tx -= Rr - (this.cw - m);
+    if (T < m + 90) v.ty += m + 90 - T; else if (Bb > this.ch - m) v.ty -= Bb - (this.ch - m);          // (the toolbars float over the top edge)
+    this.clampView(); this.render();
+  }
+  childrenOf(id, items = this.items) { const nodes = M.nodeIndex(items); return items.filter((c) => c.t === "conn" && c.from === id).map((c) => nodes.get(c.to)).filter(Boolean); }
+  /** New child below / beside the node: placed next to its existing children, connected, and ready for typing. */
+  addChild(id = null) {
+    const P = M.nodeIndex(this.items).get(id ?? this.selNode()?.id);
+    if (!P) { toast("Select a node first."); return; }
+    const kids = this.childrenOf(P.id), w = 120, h = 48, px2 = Math.max(P.x1, P.x2), px1 = Math.min(P.x1, P.x2);
+    const x1 = kids.length ? Math.min(kids[0].x1, kids[0].x2) : (px2 + M.NODE_GAP_X + w <= M.BOARD_W - 20 ? px2 + M.NODE_GAP_X : px1 - M.NODE_GAP_X - w);
+    const y1 = kids.length ? Math.max(...kids.map((k) => Math.max(k.y1, k.y2))) + M.NODE_GAP_Y : (P.y1 + P.y2) / 2 - h / 2;
+    const n = this.nodeProto(x1, y1, w, h);
+    this.revealBox(n.x1, n.y1, n.x2, n.y2);
+    this.startEdit(null, n, [this.connProto(P.id, n.id)]);
+  }
+  addSibling() {
+    const S = this.selNode();
+    if (!S) { toast("Select a node first."); return; }
+    const pc = this.items.find((c) => c.t === "conn" && c.to === S.id);
+    if (!pc) { toast("The top node has no siblings - use Add child."); return; }
+    const kids = this.childrenOf(pc.from), h = 48;
+    const n = this.nodeProto(Math.min(S.x1, S.x2), Math.max(...kids.map((k) => Math.max(k.y1, k.y2))) + M.NODE_GAP_Y, 120, h);
+    this.revealBox(n.x1, n.y1, n.x2, n.y2);
+    this.startEdit(null, n, [this.connProto(pc.from, n.id)]);
+  }
+  deleteBranch() {                                   // the node and every node reachable below it (its connectors go with them)
+    const S = this.selNode();
+    if (!S) return;
+    const ids = new Set([S.id]), stack = [S.id];
+    while (stack.length) { const id = stack.pop(); for (const c of this.items) if (c.t === "conn" && c.from === id && !ids.has(c.to)) { ids.add(c.to); stack.push(c.to); } }
+    this.commit(this.items.filter((d) => !(d.t === "node" && ids.has(d.id))));
+    if (ids.size > 1) toast(`Deleted ${ids.size} nodes (undo with Ctrl+Z).`);
+  }
+  finishLink(a, c) {
+    this.preview = null;
+    const tn = this.linkTarget; this.linkTarget = null;
+    const from = this.items.find((d) => d.t === "node" && d.id === a.from);
+    if (!from) { this.render(); return; }
+    if (tn) {
+      if (this.items.some((d) => d.t === "conn" && d.from === a.from && d.to === tn)) { toast("These nodes are already connected."); this.render(); return; }
+      this.commit([...this.items, this.connProto(a.from, tn)], { keepSel: true }); return;
+    }
+    const cx = (from.x1 + from.x2) / 2, cy = (from.y1 + from.y2) / 2;
+    if (Math.hypot(c.x - cx, c.y - cy) > 90 && !(from.x1 <= c.x && c.x <= from.x2 && from.y1 <= c.y && c.y <= from.y2)) {   // dropped on empty space: a new node there, linked
+      const n = this.nodeProto(c.x - 60, c.y - 24);
+      this.startEdit(null, n, [this.connProto(a.from, n.id)]);
+    } else this.render();
+  }
+  /** Keys for the board: Tab = child, Enter = sibling, F2 = edit, Shift+Delete = delete branch. */
+  boardKey(e) {
+    if (this.kind !== "board" || this.editing || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const d = this.selItem();
+    if (!d) return false;
+    if (e.key === "Tab" && d.t === "node") { this.addChild(); return true; }
+    if (e.key === "Enter" && d.t === "node") { this.addSibling(); return true; }
+    if (e.key === "F2" && ["node", "conn", "text", "note"].includes(d.t)) { this.startEdit(this.selected); return true; }
+    if (e.shiftKey && (e.key === "Delete" || e.key === "Backspace") && d.t === "node") { this.deleteBranch(); return true; }
+    return false;
+  }
+
   // ------------------------------------------------- text direction / alignment
   // dir (ltr|rtl) and align (left|center|right) are separate item properties. Old items without them keep the previous
   // behaviour (direction detected per line). this.fmt is what NEW text gets; it only changes when the user presses a button.
   textTarget() {                                     // the text / note the format buttons act on
     if (this.editing) return this.editing.idx !== null ? this.items[this.editing.idx] : this.editing.proto;
-    if (this.tool === "select" && this.selected !== null) { const d = this.items[this.selected]; if (d && (d.t === "text" || d.t === "note")) return d; }
+    if ((this.tool === "select" || this.tool === "node") && this.selected !== null) { const d = this.items[this.selected]; if (d && (d.t === "text" || d.t === "note" || d.t === "node")) return d; }
     return null;
   }
   displayFmt() {
@@ -988,11 +1273,12 @@ export class Panel {
   }
 
   // --------------------------------------------------------------- text edit
-  startEdit(idx, proto = null) {
+  startEdit(idx, proto = null, extra = null) {
     this.finishEdit();
     const d = idx !== null ? this.items[idx] : proto;
-    this.editing = { idx, proto, fmt: null };
-    this.ta.value = d.text || "";
+    this.editing = { idx, proto, fmt: null, extra };
+    this.ta.value = (d.t === "conn" ? d.label : d.text) || "";
+    if (proto && proto.t === "node") this.preview = [proto, ...(extra || [])];       // the new node (and its link) is visible while its text is typed
     this.ta.hidden = false;
     this.editingItem = d;
     this.positionEditor();
@@ -1005,8 +1291,10 @@ export class Panel {
     const d = this.editing.idx !== null ? this.items[this.editing.idx] : this.editing.proto, v = this.view, ta = this.ta, s = v.scale;
     if (!d) return;
     const [ox, oy] = this.origin();
-    const f = this.editing.fmt || R.fmtOf(d);          // explicit format, or null = old item (direction auto-detected)
-    ta.dir = f ? f.dir : "auto"; ta.style.textAlign = f ? f.align : "start";   // the browser's own bidi / shaping / caret handling
+    const f = this.editing.fmt || (d.t === "node" ? R.nodeFmt(d) : R.fmtOf(d));    // explicit format, or null = old item (direction auto-detected)
+    ta.dir = f ? f.dir : "auto"; ta.style.textAlign = f ? f.align : (d.t === "conn" ? "center" : "start");   // the browser's own bidi / shaping / caret handling
+    if (d.t === "node" || d.t === "conn") { this.positionMindEditor(d, f); return; }
+    ta.classList.remove("node");
     ta.style.fontSize = d.size * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
     if (d.t === "note") {
       ta.style.left = v.tx + (ox + d.x + 8) * s + "px"; ta.style.top = v.ty + (oy + d.y + M.NOTE_HEADER + 4) * s + "px";
@@ -1025,18 +1313,38 @@ export class Panel {
     if (!ed) return;
     this.editing = null; this.editingItem = null;
     const text = this.ta.value;
-    this.ta.hidden = true;
+    this.ta.hidden = true; this.ta.classList.remove("node", "conn");
+    if (ed.idx !== null) this.live = null;
     if (ed.idx === null) {
       if (text.trim()) {
         const d = { ...ed.proto, text, ...(ed.fmt || {}) };
         if (d.t === "note") d.h = Math.round(Math.max(d.h, R.noteNeededHeight(d, text)) * 100) / 100;
-        this.commit([...this.items, d]);
-      } else this.render();
+        if (d.t === "node") {                                   // size the new node to its text; it stays selected (Tab / Enter continue the map)
+          const fit = R.nodeFit(d, text); d.x2 = Math.round((d.x1 + fit.w) * 100) / 100; d.y2 = Math.round((d.y1 + fit.h) * 100) / 100;
+          const at = this.items.length; this.commit([...this.items, d, ...(ed.extra || [])], { select: at });
+        } else this.commit([...this.items, d]);
+      } else { this.preview = null; this.render(); }
       return;
     }
     const old = this.items[ed.idx];
     if (!old) { this.render(); return; }
     const items = this.items.slice();
+    if (old.t === "conn") {                                     // connector label
+      const lab = text.trim();
+      if (lab !== (old.label || "")) { const n = { ...old }; if (lab) n.label = lab; else delete n.label; items[ed.idx] = n; this.commit(items, { keepSel: true }); } else this.render();
+      return;
+    }
+    if (old.t === "node") {
+      const fmtCh = !!ed.fmt && (ed.fmt.dir !== old.dir || ed.fmt.align !== old.align);
+      if (text !== old.text || fmtCh) {
+        const d = { ...old, text, ...(ed.fmt || {}) }, fit = R.nodeFit(d, text);       // a node only grows to fit its text (a size set by hand is kept)
+        d.x2 = Math.round((Math.min(d.x1, d.x2) + Math.max(Math.abs(old.x2 - old.x1), fit.w)) * 100) / 100;
+        d.y2 = Math.round((Math.min(d.y1, d.y2) + Math.max(Math.abs(old.y2 - old.y1), fit.h)) * 100) / 100;
+        d.x1 = Math.min(old.x1, old.x2); d.y1 = Math.min(old.y1, old.y2);
+        items[ed.idx] = d; this.commit(items, { keepSel: true });
+      } else this.render();
+      return;
+    }
     if (old.t === "text" && !text.trim()) { items.splice(ed.idx, 1); this.commit(items); return; }
     const fmtChanged = !!ed.fmt && (ed.fmt.dir !== old.dir || ed.fmt.align !== old.align);
     if (text !== old.text || fmtChanged) {
@@ -1044,6 +1352,40 @@ export class Panel {
       if (old.t === "note") d.h = Math.round(Math.max(old.h, R.noteNeededHeight(d, text)) * 100) / 100;
       items[ed.idx] = d; this.commit(items, { keepSel: true });
     } else this.render();
+  }
+
+  onEditorKey(e) {
+    const ed = this.editing, d = ed && (ed.idx !== null ? this.items[ed.idx] : ed.proto);
+    if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); this.finishEdit(); }
+    else if (d && (d.t === "node" || d.t === "conn") && e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.finishEdit(); }
+    else if (d && d.t === "node" && e.key === "Tab" && !e.isComposing) { e.preventDefault(); const id = d.id; this.finishEdit(); this.addChild(id); }   // Tab: finish this node, add a child
+    e.stopPropagation();
+  }
+  /** Text box over a node / connector label while it is being edited (the node grows with its text). */
+  positionMindEditor(d, f) {
+    const ta = this.ta, v = this.view, s = v.scale, [ox, oy] = this.origin(), ed = this.editing;
+    if (d.t === "conn") {
+      const g = M.connGeometry(d, this.nodeMapFor(this.drawList) || new Map());
+      if (!g) return;
+      const w = Math.max(90, 9 * ((ta.value || "").length + 3));
+      ta.classList.add("conn"); ta.classList.remove("node");
+      ta.style.fontSize = 15 * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
+      ta.style.left = v.tx + (ox + g.mid[0] - w / 2) * s + "px"; ta.style.top = v.ty + (oy + g.mid[1] - 11) * s + "px";
+      ta.style.width = w * s + "px"; ta.style.height = 22 * s + "px"; ta.style.color = M.cssColor(d); ta.style.background = R.BOARD_COLORS[this.pages[0].paper];
+      return;
+    }
+    const fit = R.nodeFit(d, ta.value), x1 = Math.min(d.x1, d.x2), y1 = Math.min(d.y1, d.y2);
+    const w = ed.idx === null ? fit.w : Math.max(Math.abs(d.x2 - d.x1), fit.w), h = ed.idx === null ? fit.h : Math.max(Math.abs(d.y2 - d.y1), fit.h);
+    if (ed.idx === null) { d.x2 = x1 + w; d.y2 = y1 + h; }                                    // proto (still a preview): grows with the text
+    else if (Math.abs(d.x2 - d.x1) !== w || Math.abs(d.y2 - d.y1) !== h) { this.live = this.items.slice(); this.live[ed.idx] = { ...d, x1, y1, x2: x1 + w, y2: y1 + h }; }
+    const mw = Math.max(10, (w - 2 * M.NODE_PAD) / R.nodeEll(d)), L = R.layoutText(R.measureCtx(), ta.value || " ", d.size, mw, f);
+    ta.classList.add("node"); ta.classList.remove("conn");
+    ta.style.fontSize = d.size * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
+    ta.style.left = v.tx + (ox + x1 + (w - mw) / 2) * s + "px"; ta.style.top = v.ty + (oy + y1 + (h - L.height) / 2) * s + "px";
+    ta.style.width = mw * s + "px"; ta.style.height = Math.max(L.lh, L.height + 2) * s + "px";
+    ta.style.color = d.fill ? (M.parseHex(d.fill) && (0.299 * M.parseHex(d.fill)[0] + 0.587 * M.parseHex(d.fill)[1] + 0.114 * M.parseHex(d.fill)[2] > 150) ? "#111" : "#fff") : M.cssColor(d);
+    ta.style.background = "transparent";
+    this.render();
   }
 
   // ----------------------------------------------------------- insert content
@@ -1107,6 +1449,7 @@ export class Panel {
       if (token !== this.pageToken || !this.pdf || this.pdf.doc !== doc) return;
       if (!this.sizes.some(Boolean)) this.sizes[0] = [595, 842];
     }
+    if (this.kind === "board") { this.layout(); this.cur = this.vp = 0; this.view.init = true; this.fitContent(false); this.ui(); return; }
     this.layout();
     this.cur = this.vp = clamp(n, 0, this.pages.length - 1);
     this.view.fit = true; this.fitView(false);
@@ -1225,12 +1568,14 @@ export class Panel {
     if (!f) return;
     if (!(await this.app.confirmReplace(this, "open another file"))) return;
     if (this.kind === "pdf") await this.openPdfBytes(new Uint8Array(await f.arrayBuffer()), f.name);
+    else if (this.kind === "board") { try { this.setBoard(M.parseBoard(await f.text()), f.name); } catch (e) { toast(e.message, 4000); } }
     else {
       try { this.setNotebook(M.parseNotebook(await f.text()), f.name); } catch (e) { toast(e.message, 4000); }
     }
   }
   viewState() { return { zoom: Math.round(this.view.scale * 1e4) / 1e4, auto_fit: this.view.fit, page: this.shown(), bars: this.barsOpen,
-    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt }, shape: this.shapeKind, fill: this.fillOn } }; }
+    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt }, shape: this.shapeKind, fill: this.fillOn, conn_style: this.connStyle, conn_arrow: this.connArrow, node_kind: this.nodeKind },
+    ...(this.kind === "board" ? { center: [Math.round((this.cw / 2 - this.view.tx) / this.view.scale), Math.round((this.ch / 2 - this.view.ty) / this.view.scale)] } : {}) }; }
   restoreView(st) {
     if (!st || typeof st !== "object") return;
     const tb = st.toolbar;
@@ -1241,16 +1586,28 @@ export class Panel {
       if (tf && typeof tf === "object") this.fmt = { dir: M.TEXT_DIRS.includes(tf.dir) ? tf.dir : this.fmt.dir, align: M.TEXT_ALIGNS.includes(tf.align) ? tf.align : this.fmt.align };
       if (typeof tb.shape === "string" && M.SHAPE_KINDS.some((k) => k.id === tb.shape)) this.shapeKind = tb.shape;
       if (typeof tb.fill === "boolean") this.fillOn = tb.fill;
+      if (M.CONN_STYLES.includes(tb.conn_style)) this.connStyle = tb.conn_style;
+      if (typeof tb.conn_arrow === "boolean") this.connArrow = tb.conn_arrow;
+      if (M.NODE_KINDS.includes(tb.node_kind)) this.nodeKind = tb.node_kind;
       let tool = tb.tool;
       if (OLD_SHAPE_TOOLS.includes(tool)) { this.shapeKind = tool; tool = "shape"; }   // workspaces from before the Shapes tool
       this.updateShapeBtn();
-      const allowed = this.kind === "pdf" ? PDF_TOOLS : NB_TOOLS;
+      const allowed = this.kind === "pdf" ? PDF_TOOLS : this.kind === "board" ? BOARD_TOOLS : NB_TOOLS;
       this.setTool(allowed.includes(tool) ? tool : this.tool);
     }
     if (typeof st.bars === "boolean") this.setBars(st.bars);
+    if (this.kind === "board") {                                      // a board remembers zoom and the point in the middle of the view
+      const z = +st.zoom, c = st.center;
+      if (Number.isFinite(z)) this.view.scale = clamp(z, this.minZoom, 6);
+      if (Array.isArray(c) && c.length === 2 && c.every((x) => Number.isFinite(+x))) {
+        this.view.init = true;
+        if (this.root.hidden) this.pendingCenter = [+c[0], +c[1]]; else this.applyCenter([+c[0], +c[1]]);
+      }
+      this.view.fit = false; this.render(); return;
+    }
     if (st.auto_fit === false && Number.isFinite(+st.zoom) && this.hasPage) {
       const [w] = this.pageDims();
-      this.view.scale = clamp(+st.zoom, 0.2, 6); this.view.fit = false;
+      this.view.scale = clamp(+st.zoom, this.minZoom, 6); this.view.fit = false;
       if (this.continuous() && this.offs) { this.view.tx = (this.cw - this.docW * this.view.scale) / 2; this.scrollToPage(this.vp); }
       else { this.view.tx = (this.cw - w * this.view.scale) / 2; this.view.ty = 8; this.clampView(); this.scheduleRaster(); }
     } else if (this.hasPage) this.fitView(false);
@@ -1276,10 +1633,10 @@ export class Panel {
     set(this.b.zin, has); set(this.b.zout, has); set(this.b.fit, has); this.pageInput.disabled = !has;
     set(this.b.image, has);
     if (this.kind === "pdf") set(this.b.save, has);
-    else {
+    else if (this.kind === "nb") {
       set(this.b.del, n > 1); set(this.b.earlier, this.shown() > 0); set(this.b.later, this.shown() < n - 1);
       this.paper.value = this.pages[this.shown()]?.paper || "lined";
-    }
+    } else this.updateBoardUi();
     if (this.toolBtns.hltext) this.toolBtns.hltext.disabled = !has;
   }
 }

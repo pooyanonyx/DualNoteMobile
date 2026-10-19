@@ -2,7 +2,7 @@
 // Annotated PDFs embed the original PDF + the editable annotations (same attachment names as the
 // Windows app), so a PDF saved here reopens editable in both apps.
 import * as M from "./model.js";
-import { renderPage, preloadImages } from "./render.js";
+import { renderPage, preloadImages, renderBoardRegion, contentBounds, boardTheme } from "./render.js";
 
 let pdfjs = null;
 export async function initPdfjs() {
@@ -143,6 +143,21 @@ export async function exportAnnotatedPdf(source, pagesItems, onProgress = () => 
 }
 
 /** Export notebook pages as an A4 PDF (pages drawn as images with the paper). */
+/** One PDF page with the used area of a board (content + margin). printFriendly: white paper and dark ink even for a blackboard. */
+export async function exportBoardPdf(page, { printFriendly = false } = {}) {
+  const { PDFDocument } = globalThis.PDFLib;
+  await preloadImages(page.items);
+  const b = contentBounds(page.items) || [0, 0, 595, 420], m = 40;
+  const x = Math.max(0, Math.floor(b[0] - m)), y = Math.max(0, Math.floor(b[1] - m));
+  const w = Math.max(300, Math.min(M.BOARD_W - x, Math.ceil(b[2] + m) - x)), h = Math.max(200, Math.min(M.BOARD_H - y, Math.ceil(b[3] + m) - y));
+  const paper = printFriendly ? "white" : page.paper;
+  const canvas = document.createElement("canvas");
+  renderBoardRegion(canvas, page.items, { x, y, w, h, paper, grid: !!page.grid, theme: boardTheme(paper), scale: pickScale(w, h) });
+  const out = await PDFDocument.create(), img = await out.embedPng(await pngBytes(canvas));
+  canvas.width = canvas.height = 1;
+  out.addPage([w, h]).drawImage(img, { x: 0, y: 0, width: w, height: h });
+  return out.save();
+}
 export async function exportNotebookPdf(pages, onProgress = () => {}) {
   const { PDFDocument } = globalThis.PDFLib;
   const out = await PDFDocument.create();

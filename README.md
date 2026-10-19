@@ -16,7 +16,7 @@ Upload everything in this folder to the root of the repo (or any web server fold
 GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 
 ## Notes
-After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v8`) so devices pick up the update.
+After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v10`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
 
 ## Text direction and alignment
@@ -30,3 +30,15 @@ workspaces) or `Notebook + PDF`. The type is stored in `manifest.workspace_type`
 file. A PDF-only file has no `notebook.json`; a notebook-only file has no `pdf/` folder. Older files without a type open as
 `PDF + Notebook` unless they saved another layout. A panel that leaves the structure is never deleted: it stays in memory (and in
 the automatic session backup) and returns when a layout with that panel is chosen again, but it is not written to the file.
+
+## Board and mind map
+A Board is one large canvas (4000 x 3000 units) with the normal drawing tools plus **Node** and **Link**. Background: white or
+blackboard (the sun / moon button). Ink that is pure black (or pure white) is *drawn* in the opposite shade so it stays readable;
+the saved colours never change. Mind map items: `node` (id, kind, box, text, colours, optional fill) and `conn` (from/to node ids,
+style, arrow, optional label); a connector follows its nodes. Boards are saved as `board.json` / `board2.json` in a workspace and as
+`.dnboard` files; PDF export renders the used area (blackboards: as shown, or print-friendly on white).
+
+## Layouts
+Up to three panels from: PDF, Notebook, Board (and a second of each). Layout menu presets + "Customize panels...".
+`manifest.workspace_type` is one of pdf, notebook, board, pdf+notebook, notebook+pdf, pdf+board, notebook+board,
+pdf+notebook+board or `custom` (then `settings.window.layout` lists the panel keys).

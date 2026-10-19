@@ -190,7 +190,78 @@ function drawNote(ctx, d, skipText) {
 
 // -------------------------------------------------------------------- item
 /** Draw one item. opts.skipText hides the text of an item that is being edited. */
+// ---- board: ink adaptation, mind-map nodes / connectors ---------------------------------------------------------------
+// On a blackboard, pure black ink would vanish (and white ink on a white board). Such neutral extreme colours are DRAWN in the
+// opposite shade; the stored colour never changes, so switching the background back restores the original look exactly.
+function adaptHex(hex, theme) {
+  const c = M.parseHex(hex);
+  if (!c) return hex;
+  const lum = (c[0] + c[1] + c[2]) / 3, neutral = Math.max(...c) - Math.min(...c) < 26;
+  if (neutral && theme === "dark" && lum < 70) return "#f2f2f2";
+  if (neutral && theme === "light" && lum > 190) return "#1a1a1a";
+  return hex;
+}
+export function themed(d, theme) {
+  if (!theme || d.t === "note" || d.t === "image" || d.t === "hl" || !d.color) return d;
+  const c = adaptHex(d.color, theme), f = d.fill ? adaptHex(d.fill, theme) : d.fill;
+  return c === d.color && f === d.fill ? d : { ...d, color: c, ...(f !== undefined ? { fill: f } : {}) };
+}
+export const BOARD_COLORS = { white: "#ffffff", black: "#20252a" };
+export const boardTheme = (paper) => (paper === "black" ? "dark" : "light");
+const contrastOn = (hex) => { const c = M.parseHex(hex) || [255, 255, 255]; return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) > 150 ? "#111111" : "#ffffff"; };
+export const nodeFmt = (d) => fmtOf(d) || { dir: isRtl(String(d.text || "")) ? "rtl" : "ltr", align: "center" };
+export const nodeEll = (d) => (d.kind === "ellipse" ? 1.35 : 1);          // an ellipse holds less text than a rectangle of the same size
+/** Size (w,h) a node needs for this text. */
+export function nodeFit(d, text) {
+  const ell = nodeEll(d), pad = M.NODE_PAD, L = layoutText(measureCtx(), text || " ", d.size, (M.NODE_MAX_W - 2 * pad) / ell, nodeFmt({ ...d, text }));
+  return { w: Math.max(M.NODE_MIN_W, Math.min(M.NODE_MAX_W, Math.ceil((L.width + 2 * pad) * ell))), h: Math.max(M.NODE_MIN_H, Math.ceil((L.height + 2 * pad) * ell)) };
+}
+function nodePath(ctx, d) {
+  const x = Math.min(d.x1, d.x2), y = Math.min(d.y1, d.y2), w = Math.abs(d.x2 - d.x1), h = Math.abs(d.y2 - d.y1);
+  ctx.beginPath();
+  if (d.kind === "ellipse") ctx.ellipse(x + w / 2, y + h / 2, Math.max(0.01, w / 2), Math.max(0.01, h / 2), 0, 0, Math.PI * 2);
+  else if (d.kind === "rect") ctx.rect(x, y, w, h);
+  else { const r = Math.min(16, w / 2, h / 2); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+}
+/** Union of the boxes of all items (page coordinates), or null. nodes = nodeIndex(items). */
+export function itemBounds(d, nodes) {
+  const b = d.t === "text" ? textBox(d) : M.geomBox(d, null, nodes), e = M.halfWidth(d);
+  return [b[0] - e, b[1] - e, b[2] + e, b[3] + e];
+}
+export function contentBounds(items) {
+  if (!items.length) return null;
+  const nodes = M.nodeIndex(items);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const d of items) { const b = itemBounds(d, nodes); x0 = Math.min(x0, b[0]); y0 = Math.min(y0, b[1]); x1 = Math.max(x1, b[2]); y1 = Math.max(y1, b[3]); }
+  return Number.isFinite(x0) ? [x0, y0, x1, y1] : null;
+}
+export function drawBoardBg(ctx, w, h, page, vis = null) {
+  ctx.save();
+  ctx.fillStyle = BOARD_COLORS[page.paper] || BOARD_COLORS.white; ctx.fillRect(0, 0, w, h);
+  if (page.grid) {                                          // dotted grid, only the visible part
+    const g = 40, x0 = vis ? Math.max(0, Math.floor(vis[0] / g) * g) : 0, y0 = vis ? Math.max(0, Math.floor(vis[1] / g) * g) : 0;
+    const x1 = vis ? Math.min(w, vis[2] + g) : w, y1 = vis ? Math.min(h, vis[3] + g) : h;
+    ctx.fillStyle = page.paper === "black" ? "#59626c" : "#c3cad4";
+    for (let y = y0; y <= y1; y += g) for (let x = x0; x <= x1; x += g) ctx.fillRect(x - 1, y - 1, 2, 2);
+  }
+  ctx.strokeStyle = page.paper === "black" ? "#59626c" : "#8a8f98"; ctx.lineWidth = 1.5; ctx.strokeRect(0, 0, w, h);
+  ctx.restore();
+}
+/** Render a rectangle (x,y,w,h in board units) of a board for export. theme: "dark" | "light" | null. */
+export function renderBoardRegion(canvas, items, { x, y, w, h, paper = "white", grid = false, theme = null, scale = 1 }) {
+  canvas.width = Math.max(1, Math.round(w * scale)); canvas.height = Math.max(1, Math.round(h * scale));
+  const ctx = canvas.getContext("2d");
+  ctx.save(); ctx.scale(scale, scale); ctx.translate(-x, -y);
+  drawBoardBg(ctx, M.BOARD_W, M.BOARD_H, { paper, grid }, [x, y, x + w, y + h]);
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  const nodes = M.hasConns(items) ? M.nodeIndex(items) : null, bg = BOARD_COLORS[paper];
+  for (const d of items) drawItem(ctx, d, { theme, nodes, bg });
+  ctx.restore();
+  return canvas;
+}
+
 export function drawItem(ctx, d, opts = {}) {
+  if (opts.theme) d = themed(d, opts.theme);
   const t = d.t;
   ctx.save();
   ctx.lineJoin = "round"; ctx.lineCap = "round";
@@ -219,6 +290,33 @@ export function drawItem(ctx, d, opts = {}) {
     ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
     if (d.fill) { ctx.fillStyle = M.cssColor({ ...d, color: d.fill }); ctx.fill(); }
     ctx.stroke();
+  } else if (t === "node") {
+    ctx.lineWidth = d.w; ctx.strokeStyle = M.cssColor(d); ctx.lineJoin = "round";
+    nodePath(ctx, d);
+    if (d.fill) { ctx.fillStyle = M.cssColor({ ...d, color: d.fill }); ctx.fill(); }
+    ctx.stroke();
+    if (!opts.skipText) {
+      const x = Math.min(d.x1, d.x2), y = Math.min(d.y1, d.y2), w = Math.abs(d.x2 - d.x1), h = Math.abs(d.y2 - d.y1);
+      const fmt = nodeFmt(d), mw = Math.max(10, (w - 2 * M.NODE_PAD) / nodeEll(d)), L = layoutText(ctx, d.text, d.size, mw, fmt);
+      drawTextLines(ctx, L, x + (w - mw) / 2, y + (h - L.height) / 2, mw, d.size, d.fill ? contrastOn(d.fill) : M.cssColor(d), fmt);
+    }
+  } else if (t === "conn") {
+    const g = opts.nodes && M.connGeometry(d, opts.nodes);
+    if (g) {
+      ctx.strokeStyle = M.cssColor(d); ctx.lineWidth = d.w;
+      ctx.beginPath(); g.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
+      if (d.arrow !== false && d.to) {
+        const s = 7 + d.w * 2.2, a = g.angle, [ex, ey] = g.end;
+        ctx.fillStyle = M.cssColor(d); ctx.beginPath(); ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - s * Math.cos(a - 0.45), ey - s * Math.sin(a - 0.45)); ctx.lineTo(ex - s * Math.cos(a + 0.45), ey - s * Math.sin(a + 0.45)); ctx.closePath(); ctx.fill();
+      }
+      if (d.label && !opts.skipText) {
+        const size = 15; ctx.font = `${size}px ${FONT_STACK}`; ctx.textBaseline = "middle"; ctx.textAlign = "center";
+        const tw = ctx.measureText(d.label).width + 10;
+        ctx.fillStyle = opts.bg || "#ffffff"; ctx.fillRect(g.mid[0] - tw / 2, g.mid[1] - size * 0.7, tw, size * 1.4);
+        ctx.fillStyle = M.cssColor(d); ctx.direction = isRtl(d.label) ? "rtl" : "ltr"; ctx.fillText(d.label, g.mid[0], g.mid[1]);
+      }
+    }
   } else if (t === "hl") {
     ctx.fillStyle = M.cssColor(d);
     ctx.fillRect(Math.min(d.x1, d.x2), Math.min(d.y1, d.y2), Math.abs(d.x2 - d.x1), Math.abs(d.y2 - d.y1));
