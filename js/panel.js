@@ -3,6 +3,7 @@
 import * as M from "./model.js";
 import * as R from "./render.js";
 import * as PDF from "./pdfio.js";
+import * as K from "./keys.js";
 import { el, icon, toast, dialog, popup, closePopup, paletteContent, customColorDialog, brushContent } from "./ui.js";
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -91,7 +92,7 @@ export class Panel {
     const mk = (cls) => el("div", { class: cls });
     this.titleEl = el("span", { class: "ptitle" });
     // The toggle is an icon button with a clear on / off state; undo / redo live next to it so they stay reachable while the toolbars are hidden.
-    this.barsBtn = el("button", { class: "btn small barsbtn", type: "button", "aria-expanded": "true", onclick: () => this.setBars(!this.barsOpen), title: "Show or hide this panel's toolbars" },
+    this.barsBtn = el("button", { class: "btn small barsbtn", type: "button", "aria-expanded": "true", onclick: () => this.setBars(!this.barsOpen), title: `Show or hide this panel's toolbars (${K.MOD}+.)` },
       icon("tools"), el("span", { class: "lbl" }, "Toolbars"), icon("chevdown", "tiny chev"));
     this.hactions = el("span", { class: "hactions" }, this.barsBtn);
     const head = el("header", { class: "phead" }, this.titleEl, this.hactions);
@@ -121,8 +122,8 @@ export class Panel {
       this.b.export = b("pdf", "PDF", "Export all pages as a PDF", () => this.exportNotebook());
       fileBar.append(this.b.new, this.b.open, this.b.save, this.b.export);
     }
-    this.b.undo = b("undo", "", "Undo (Ctrl+Z)", () => this.undo());
-    this.b.redo = b("redo", "", "Redo (Ctrl+Y)", () => this.redo());
+    this.b.undo = b("undo", "", `Undo (${K.MOD}+Z)`, () => this.undo());
+    this.b.redo = b("redo", "", `Redo (${K.MOD}+Shift+Z)`, () => this.redo());
     for (const u of [this.b.undo, this.b.redo]) u.classList.add("small", "icon-only");
     this.hactions.prepend(this.b.undo, this.b.redo);
     this.b.paste = b("paste", "Paste", "Paste an image (e.g. a screenshot) or text", () => this.app.pasteButton(this));
@@ -135,9 +136,9 @@ export class Panel {
       onchange: () => this.goto(+this.pageInput.value - 1), onfocus: (e) => e.target.select() });
     this.pageCount = el("span", { class: "pcount" });
     this.b.next = b("next", "", "Next page", () => this.goto(this.cur + 1));
-    this.b.zout = b("minus", "", "Zoom out", () => this.zoomBy(1 / 1.25));
-    this.b.zin = b("plus", "", "Zoom in", () => this.zoomBy(1.25));
-    this.b.fit = b("fit", "Fit", "Fit page to width", () => this.fitView());
+    this.b.zout = b("minus", "", "Zoom out (-)", () => this.zoomBy(1 / 1.25));
+    this.b.zin = b("plus", "", "Zoom in (+)", () => this.zoomBy(1.25));
+    this.b.fit = b("fit", "Fit", "Fit page to width (0)", () => this.fitView());
     if (this.kind === "board") {                    // a board is one big canvas: zoom, fit, background, grid (no page controls)
       this.b.fit.title = "Fit all content in view";
       this.bgBtn = el("button", { class: "btn", type: "button", title: "Switch between a whiteboard and a blackboard", onclick: () => this.toggleBoardBg() }, icon("sun"), el("span", { class: "lbl" }, "White"));
@@ -160,11 +161,11 @@ export class Panel {
       let x;
       if (k === "shape") {          // one button for all shapes: shows the active shape, opens the shape menu
         this.shapeIcon = el("span", { class: "shico" }, icon(this.shapeKind));
-        x = el("button", { class: "btn tool", type: "button", title: TOOL_INFO[k][1], "aria-label": TOOL_INFO[k][0], "aria-haspopup": "menu",
+        x = el("button", { class: "btn tool", type: "button", title: K.hint(TOOL_INFO[k][1], K.TOOL_KEYS[k]), "aria-label": TOOL_INFO[k][0], "aria-haspopup": "menu",
           "aria-pressed": "false", onclick: () => this.openShapes() }, this.shapeIcon, el("span", { class: "lbl" }, TOOL_INFO[k][0]), icon("chevdown", "tiny"));
         this.shapeBtn = x;
       } else {
-        x = el("button", { class: "btn tool", type: "button", title: TOOL_INFO[k][1], "aria-label": TOOL_INFO[k][0],
+        x = el("button", { class: "btn tool", type: "button", title: K.hint(TOOL_INFO[k][1], K.TOOL_KEYS[k]), "aria-label": TOOL_INFO[k][0],
           "aria-pressed": "false", onclick: () => this.setTool(k) }, icon(k), el("span", { class: "lbl" }, TOOL_INFO[k][0]));
       }
       this.toolBtns[k] = x; toolBar.append(x);
@@ -223,12 +224,14 @@ export class Panel {
   }
 
   // ------------------------------------------------------------------- tools
-  setTool(tool, silent = false) {
+  /** temp = a temporary switch (hold Space for Hand): the selection stays, and the tool to return to is remembered by beginTempTool. */
+  setTool(tool, silent = false, temp = false) {
     this.finishEdit();
+    if (!temp) this.tempPrev = null;                                 // choosing a tool by hand ends any temporary switch
     this.tool = tool; this.linkTarget = null;
     for (const [k, x] of Object.entries(this.toolBtns)) { x.classList.toggle("on", k === tool); x.setAttribute("aria-pressed", String(k === tool)); }
     this.stage.dataset.tool = tool;
-    if (tool !== "select" && this.selected !== null) this.selected = null;
+    if (tool !== "select" && this.selected !== null && !temp) this.selected = null;
     const g = GROUP_OF_TOOL[tool];
     if (g) this.curStyle = { ...this.groups[g] };
     this.updateColorDot();
@@ -691,8 +694,48 @@ export class Panel {
     this.app.onChange(this);
     this.ui(); this.render();
   }
-  undo() { if (this.editing) return; if (this.history.canUndo()) this.historyStep(this.history.undoStep(this.snap())); }
-  redo() { if (this.editing) return; if (this.history.canRedo()) this.historyStep(this.history.redoStep(this.snap())); }
+  // ---- keyboard: temporary tool, panel-level shortcuts (the app routes keys here; typing in a field never reaches this code)
+  beginTempTool(tool) {
+    if (this.editing || this.action || this.tempPrev != null || !this.toolBtns[tool] || this.tool === tool) return false;
+    this.tempPrev = this.tool; this.setTool(tool, false, true);
+    return true;
+  }
+  endTempTool() {
+    if (this.tempPrev == null) return false;
+    const prev = this.tempPrev; this.tempPrev = null;
+    if (this.toolBtns[prev]) { this.setTool(prev, false, true); if (!["select", "node", "link"].includes(prev)) this.selected = null; this.render(); }
+    return true;
+  }
+  scrollViewBy(dx, dy) { this.stopFling(); this.view.tx -= dx; this.view.ty -= dy; this.clampView(); this.positionEditor(); this.render(); this.scheduleRaster(); }
+  /** Plain-key shortcuts for this panel. Returns true when the key was used. (Key repeat is ignored for tool / toggle keys.) */
+  handleKey(e, key) {
+    if (this.editing || this.root.hidden || !this.hasPage) return false;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.altKey && key === ".") { this.setBars(!this.barsOpen); return true; }
+    if (mod || e.altKey) return false;
+    if (!e.shiftKey) {
+      const tool = K.TOOL_BY_KEY[key];
+      if (tool && this.toolBtns[tool]) { if (!e.repeat && !this.action) this.setTool(tool); return true; }
+      if (key === K.FILL_KEY.toLowerCase() && !this.fillBtn.hidden) { if (!e.repeat && !this.fillBtn.disabled) this.toggleFill(); return true; }
+    }
+    const step = e.shiftKey ? 240 : 60;
+    switch (key) {
+      case "+": this.zoomBy(1.15); return true;
+      case "-": this.zoomBy(1 / 1.15); return true;
+      case "0": if (e.shiftKey) return false; this.fitView(); return true;
+      case "ArrowUp": this.scrollViewBy(0, -step); return true;
+      case "ArrowDown": this.scrollViewBy(0, step); return true;
+      case "ArrowLeft": this.scrollViewBy(-step, 0); return true;
+      case "ArrowRight": this.scrollViewBy(step, 0); return true;
+      case "PageUp": this.scrollViewBy(0, -0.9 * this.ch); return true;
+      case "PageDown": this.scrollViewBy(0, 0.9 * this.ch); return true;
+      case "Home": if (this.kind === "board") this.fitContent(); else this.goto(0); return true;
+      case "End": if (this.kind === "board") this.fitContent(); else this.goto(this.pages.length - 1); return true;
+    }
+    return false;
+  }
+  undo() { if (this.editing || this.action) return; if (this.history.canUndo()) this.historyStep(this.history.undoStep(this.snap())); }
+  redo() { if (this.editing || this.action) return; if (this.history.canRedo()) this.historyStep(this.history.redoStep(this.snap())); }
   async historyStep([state, idx]) {
     this.restoreSnap(state);
     this.selected = null; this.live = null; this.preview = null; this.dirty = true;
@@ -899,7 +942,7 @@ export class Panel {
     if (a.type === "link") this.finishLink(a, this.clampP(p));
   }
   deleteSelected() {
-    if (this.selected === null || this.editing || !this.items[this.selected]) return false;
+    if (this.selected === null || this.editing || this.action || !this.items[this.selected]) return false;
     const items = this.items.slice(); items.splice(this.selected, 1);
     this.commit(items); return true;
   }
@@ -1001,7 +1044,7 @@ export class Panel {
   updateShapeBtn() {
     const k = M.shapeKindInfo(this.shapeKind);
     this.shapeIcon.replaceChildren(icon(k.id));
-    this.shapeBtn.title = "Shapes - active: " + k.label;
+    this.shapeBtn.title = `Shapes - active: ${k.label} (${K.TOOL_KEYS.shape})`;
   }
   fillTarget() {                                     // a selected closed shape (the Fill button then edits that shape)
     if ((this.tool === "select" || this.tool === "node" || this.tool === "link") && this.selected !== null) { const d = this.items[this.selected]; if (d && M.isClosedShape(d)) return d; }
@@ -1015,7 +1058,7 @@ export class Panel {
     if (key === this.fillKey) return;
     this.fillKey = key; this.fillBtn.hidden = !show;               // contextual: only next to shapes (disabled for open shapes such as lines)
     this.fillBtn.disabled = !en; this.fillBtn.classList.toggle("on", on); this.fillBtn.setAttribute("aria-pressed", String(on));
-    this.fillBtn.title = en ? `Fill closed shapes with the colour: ${on ? "on" : "off"}` : "Fill applies to closed shapes (rectangle, ellipse, ...); lines have no interior";
+    this.fillBtn.title = en ? `Fill closed shapes with the colour: ${on ? "on" : "off"} (${K.FILL_KEY})` : "Fill applies to closed shapes (rectangle, ellipse, ...); lines have no interior";
   }
   toggleFill() {
     const d = this.fillTarget();
@@ -1116,14 +1159,14 @@ export class Panel {
       curve: mb("curve", "Curved connectors", () => this.setConn({ style: "curve" })),
       line: mb("line", "Straight connectors", () => this.setConn({ style: "line" })),
       elbow: mb("elbow", "Elbow connectors", () => this.setConn({ style: "elbow" })),
-      arrow: mb("arrow", "Arrow head on connectors", () => this.setConn({ arrow: !this.mindState().arrow })),
+      arrow: mb("arrow", "Arrowheads on connectors (on / off, independent of the connector type)", () => this.setConn({ arrow: !this.mindState().arrow })),
       round: mb("node", "Rounded nodes", () => this.setNodeKind("round")),
       ellipse: mb("ellipse", "Oval nodes", () => this.setNodeKind("ellipse")),
       rect: mb("rect", "Square nodes", () => this.setNodeKind("rect")),
     };
     const B = this.mindBtns;
     this.mindGroup = el("span", { class: "fmtgrp mindgrp", role: "group", "aria-label": "Mind map", hidden: true },
-      B.child, B.sibling, B.branch, sep(), B.curve, B.line, B.elbow, B.arrow, sep(), B.round, B.ellipse, B.rect);
+      B.child, B.sibling, B.branch, sep(), B.curve, B.line, B.elbow, sep(), B.arrow, sep(), B.round, B.ellipse, B.rect);   // connector type | arrowheads on / off | node shape
     for (const ev of ["pointerdown", "mousedown"]) this.mindGroup.addEventListener(ev, (e) => e.preventDefault());
   }
   selItem() { return this.selected !== null ? (this.items[this.selected] || null) : null; }

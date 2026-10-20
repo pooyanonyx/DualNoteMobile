@@ -81,6 +81,9 @@ textarea.editor.note { border-color:rgba(0,0,0,.35); }
 .popup { position:fixed; z-index:50; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(0,0,0,.25); padding:10px; max-width:calc(100vw - 16px); overflow:auto; }
 .menu { display:flex; flex-direction:column; min-width:220px; }
 .mi { display:flex; align-items:center; gap:8px; border:0; background:transparent; padding:12px; font:inherit; text-align:left; border-radius:8px; cursor:pointer; }
+.kbdlist { max-height:min(60vh, 520px); overflow:auto; padding-right:6px; } .kbdlist .kgroup { margin:0 0 10px; } .kbdlist h3 { margin:6px 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:#64748b; }
+.krow { display:flex; justify-content:space-between; gap:16px; padding:2px 0; font-size:13px; } .krow .keys { white-space:nowrap; color:#64748b; }
+kbd { display:inline-block; min-width:18px; padding:1px 6px; border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; background:#f8fafc; color:#1e293b; font:600 11px/1.5 system-ui, sans-serif; text-align:center; }
 .tsep { width:1px; height:18px; background:var(--line); margin:0 3px; flex:none; }
 .hactions { display:inline-flex; align-items:center; gap:3px; }
 .barsbtn .chev { transition:transform .15s; transform:rotate(-90deg); } .barsbtn.open .chev { transform:none; }

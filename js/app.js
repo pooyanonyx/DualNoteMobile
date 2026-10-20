@@ -1,5 +1,6 @@
 // DualNote (web / Android): application shell - layout, workspace files, autosave, dialogs, shortcuts.
 import * as M from "./model.js";
+import * as K from "./keys.js";
 import * as WS from "./workspace.js";
 import { Panel } from "./panel.js";
 import { setImageLoadedCallback } from "./render.js";
@@ -50,6 +51,9 @@ export class App {
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") this.flushAutosave(); });
     window.addEventListener("pagehide", () => this.flushAutosave());
     document.addEventListener("keydown", (e) => this.onKey(e));
+    document.addEventListener("keyup", (e) => { if (K.keyName(e) === " ") this.endTempHand(); });          // releasing Space returns to the previous tool
+    window.addEventListener("blur", () => this.endTempHand());
+    document.addEventListener("visibilitychange", () => { if (document.hidden) this.endTempHand(); });
     document.addEventListener("paste", (e) => this.onPaste(e));
     document.addEventListener("dragover", (e) => { e.preventDefault(); });
     document.addEventListener("drop", (e) => this.onDrop(e));
@@ -69,7 +73,7 @@ export class App {
     this.top = el("header", { class: "topbar" },
       el("span", { class: "brand" }, "DualNote"),
       b("open", "Open workspace", "Open a workspace file (.dnws)", () => this.wsOpenInput.click()),
-      b("save", "Save workspace", "Save everything (PDF, annotations, notebooks) in one file (Ctrl+S)", () => this.saveWorkspace()),
+      b("save", "Save workspace", "Save everything (PDF, annotations, notebooks) in one file (" + K.MOD + "+S)", () => this.saveWorkspace()),
       b("plus", "New", "Start a new empty workspace", () => this.newWorkspace()),
       el("span", { class: "gap" }), this.layoutBtn, this.switchBtn, this.seg, this.installBtn,
       b("menu", "", "Help", () => this.help(), "icon-only"), this.wsOpenInput);
@@ -248,29 +252,65 @@ export class App {
       }
     }
   }
-  onKey(e) {
-    const t = e.target, typing = t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.tagName === "SELECT");
-    const mod = e.ctrlKey || e.metaKey, p = this.active;
-    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); this.saveWorkspace(); return; }
-    if (typing) return;
-    if (!mod && p?.boardKey?.(e)) { e.preventDefault(); return; }                  // board: Tab = child node, Enter = sibling, F2 = edit
-    if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); p?.undo(); }
-    else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); p?.redo(); }
-    else if (e.key === "Delete" || e.key === "Backspace") { if (p?.deleteSelected()) e.preventDefault(); }
-    else if (e.key === "Escape") { closePopup(); p?.deselect(); }
-    else if (e.altKey && e.key === "ArrowLeft") { p?.goto(p.shown() - 1); }
-    else if (e.altKey && e.key === "ArrowRight") { p?.goto(p.shown() + 1); }
+  endTempHand() { if (this.tempHeld) { this.tempHeld.endTempTool(); this.tempHeld = null; } }
+  focusPanel(i) {
+    const key = this.order[i];
+    if (!key) return;
+    if (this.narrow) this.setTab(i);
+    this.setActive(this.panels[key]);
   }
-  help() {
-    dialog({ title: "DualNote - quick help", content: el("div", { class: "help" },
+  /**
+   * The one keyboard entry point (a single document listener; nothing else handles keys except text boxes, which stop their own events).
+   * Order matters: dialog > Ctrl+S > text field (typing owns the keyboard) > focused button > open menu > shortcuts.
+   * Letters use keyName(), so shortcuts also work on a Persian (or any non-Latin) keyboard layout.
+   */
+  onKey(e) {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;       // already handled / IME composition in progress
+    const t = e.target, p = this.active, mod = e.ctrlKey || e.metaKey, key = K.keyName(e);
+    if (document.querySelector(".backdrop")) return;                            // a dialog is open: it owns the keyboard (it handles its own Escape)
+    if (mod && !e.altKey && !e.shiftKey && key === "s") { e.preventDefault(); this.saveWorkspace(); return; }
+    if (K.isTextField(t)) return;                                               // typing: Space, letters, Ctrl+Z (text undo) ... are the browser's
+    if (K.isFocusedControl(t) && (key === " " || key === "Enter")) return;      // a keyboard-focused button: Enter / Space activate it
+    if (document.querySelector(".popup") && key !== "Escape") return;           // an open menu: no shortcuts behind it
+    if (key === "Escape") { closePopup(); p?.deselect(); return; }
+    if (e.altKey && !mod && /^[1-9]$/.test(key)) { e.preventDefault(); this.focusPanel(+key - 1); return; }
+    if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); p?.goto(p.shown() - 1); return; }
+    if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); p?.goto(p.shown() + 1); return; }
+    if (mod && !e.altKey) {                                                     // undo / redo use the panel's own history (and ignore a stroke in progress)
+      if (key === "z") { e.preventDefault(); if (e.shiftKey) p?.redo(); else p?.undo(); return; }
+      if (key === "y" && !e.shiftKey) { e.preventDefault(); p?.redo(); return; }
+      if (p?.handleKey(e, key)) e.preventDefault();
+      return;
+    }
+    if (key === " " && !e.altKey) {                                             // hold Space: Hand tool until the key is released
+      e.preventDefault();
+      if (!e.repeat && p && !p.root.hidden && p.beginTempTool("pan")) this.tempHeld = p;
+      return;
+    }
+    if (key === "?") { e.preventDefault(); this.shortcuts(); return; }
+    if (p?.boardKey?.(e)) { e.preventDefault(); return; }                       // board: Tab = child node, Enter = sibling, F2 = edit
+    if (e.key === "Delete" || e.key === "Backspace") { if (p?.deleteSelected()) e.preventDefault(); return; }
+    if (p?.handleKey(e, key)) e.preventDefault();
+  }
+  shortcuts() {
+    const rows = (list) => list.map(([label, keys]) => el("div", { class: "krow" }, el("span", {}, label),
+      el("span", { class: "keys" }, ...keys.split("  /  ").flatMap((k, i) => (i ? [" / ", el("kbd", {}, k)] : [el("kbd", {}, k)])))));
+    return dialog({ title: "Keyboard shortcuts", content: el("div", { class: "kbdlist" },
+      ...K.SHORTCUT_GROUPS.map(([title, list]) => el("div", { class: "kgroup" }, el("h3", {}, title), ...rows(list))),
+      el("p", { class: "muted" }, "Shortcuts are switched off while you type in a text box, a field or a dialog, so letters and Space are always typed normally.")) });
+  }
+  async help() {
+    const r = await dialog({ title: "DualNote - quick help", buttons: [{ label: "Keyboard shortcuts", value: "keys" }, { label: "Close", value: true, primary: true }], content: el("div", { class: "help" },
       el("p", {}, el("b", {}, "Touch: "), "one finger draws with the chosen tool; two fingers scroll and pinch-zoom. With the Select or Hand tool, drag to scroll. While a pen/stylus is in use, finger touches are ignored (palm rejection)."),
       el("p", {}, el("b", {}, "Board: "), "a big canvas for sketches and mind maps. Switch between a white board and a blackboard with the sun / moon button (your ink adapts, nothing is changed). Mind map: use the Node tool to add nodes, drag from a node with the Link tool to connect, Tab adds a child, Enter a sibling, double-tap a node or connector to edit its text."),
       el("p", {}, el("b", {}, "Layout: "), "the Layout menu chooses which panels the workspace has (up to three: PDF, Notebook, Board). Use “Customize panels…” for any order or a second PDF / Notebook / Board."),
       el("p", {}, el("b", {}, "PDF pages: "), "pages are laid out one after another - just scroll (mouse wheel, two fingers, or the Hand tool). The page box jumps to a page number; the arrows move one page."),
       el("p", {}, el("b", {}, "Edit: "), "Select an item to move it or drag the round handles to resize it. Double-tap text and notes to edit. Delete key or the Eraser removes items."),
+      el("p", {}, el("b", {}, "Keyboard: "), "V select, H hand (or hold Space), P pen, E eraser, T text ..., Ctrl+Z / Ctrl+Shift+Z undo / redo. Press ? for the full list."),
       el("p", {}, el("b", {}, "Pictures: "), "Press Ctrl+V (or the Paste button) to paste a screenshot, or use the Image button / drag a picture onto a page."),
       el("p", {}, el("b", {}, "Saving: "), "Save workspace keeps the PDF, all annotations and both notebooks in ONE file (also opens in the Windows app). Your session is also kept automatically on this device."),
       el("p", { class: "muted" }, "Annotated PDFs show your drawings as images on the page and embed the original + editable data, so they reopen editable here and in the Windows app.")) });
+    if (r === "keys") this.shortcuts();
   }
 
   // ----------------------------------------------------------- workspace

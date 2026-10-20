@@ -16,7 +16,7 @@ Upload everything in this folder to the root of the repo (or any web server fold
 GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 
 ## Notes
-After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v10`) so devices pick up the update.
+After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v12`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
 
 ## Text direction and alignment
@@ -42,3 +42,9 @@ style, arrow, optional label); a connector follows its nodes. Boards are saved a
 Up to three panels from: PDF, Notebook, Board (and a second of each). Layout menu presets + "Customize panels...".
 `manifest.workspace_type` is one of pdf, notebook, board, pdf+notebook, notebook+pdf, pdf+board, notebook+board,
 pdf+notebook+board or `custom` (then `settings.window.layout` lists the panel keys).
+
+## Keyboard
+All shortcuts live in `js/keys.js` (one table used by the key handler, the tooltips and the "?" list). The single key handler is
+`App.onKey` in `js/app.js`; panel-specific keys are in `Panel.handleKey` / `Panel.boardKey`. Keys are matched with `keyName()`, which falls
+back to the physical key on non-Latin layouts (Persian) so Ctrl+Z, P, V ... work there too. Order of precedence: open dialog > Ctrl+S >
+text field (typing owns the keyboard) > keyboard-focused button (Enter / Space activate it) > open menu > shortcuts.

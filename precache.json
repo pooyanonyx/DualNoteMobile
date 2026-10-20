@@ -6,6 +6,7 @@
 "icons/icon-maskable-512.png",
 "index.html",
 "js/app.js",
+"js/keys.js",
 "js/model.js",
 "js/panel.js",
 "js/pdfio.js",

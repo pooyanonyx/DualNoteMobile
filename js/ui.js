@@ -130,7 +130,7 @@ export function popup(anchor, content, { onClose } = {}) {
   };
   place();
   const onDown = (e) => { if (!card.contains(e.target) && !anchor.contains(e.target)) close(); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(); } };   // Escape closes the menu only (the app must not also deselect)
   setTimeout(() => document.addEventListener("pointerdown", onDown, true), 0);
   document.addEventListener("keydown", onKey, true);
   window.addEventListener("resize", close, { once: true });
