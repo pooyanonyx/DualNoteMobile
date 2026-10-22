@@ -10,7 +10,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const TOOL_INFO = {
   select: ["Select", "Select, move, resize, recolour or delete. Double-tap text/notes to edit. Drag empty space to scroll."],
   pen: ["Pen", "Freehand pen"], mark: ["Marker", "Semi-transparent highlighter marker"],
-  hltext: ["Highlight", "Drag across PDF text to highlight whole words"], eraser: ["Eraser", "Drag over items to erase them"],
+  hltext: ["Highlight", "Drag across PDF text to highlight whole words"], eraser: ["Eraser", "Erase part of a pen or marker stroke by dragging over it (size: Brush button); other items are removed whole"],
   text: ["Text", "Tap to add a text box"], note: ["Note", "Tap to stick a sticky note on the page"],
   shape: ["Shapes", "Pick a shape (line, arrow, rectangle, ellipse, triangle, ...) and draw it"],
   node: ["Node", "Mind map: tap to add a node, drag to move it (Tab = child, Enter = sibling)"],
@@ -21,7 +21,8 @@ const PDF_TOOLS = ["select", "pen", "mark", "hltext", "eraser", "text", "note", 
 const NB_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
 const BOARD_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "node", "link", "pan"];
 const SEP_AFTER = new Set(["select", "eraser", "shape", "link"]);
-const GROUP_OF_TOOL = { pen: "draw", text: "draw", shape: "draw", node: "draw", link: "draw", mark: "mark", hltext: "hltext", note: "note" };
+const GROUP_OF_TOOL = { eraser: "erase", pen: "draw", text: "draw", shape: "draw", node: "draw", link: "draw", mark: "mark", hltext: "hltext", note: "note" };
+const MIND_TOOLS = ["node", "link"];                  // on PDF / notebook panels these live in one "Mind map" menu button (on a board: two buttons)
 const OLD_SHAPE_TOOLS = ["line", "arrow", "rect", "ellipse"];     // separate tools of older versions / workspaces -> Shapes tool
 const STYLE_TO_ITEM = { color: "color", width: "w", size: "size", alpha: "alpha", bright: "bright" };
 export function defaultGroups(color = "#d32f2f") {
@@ -30,6 +31,7 @@ export function defaultGroups(color = "#d32f2f") {
     mark: { color: "#fdd835", width: 14, size: 18, alpha: 110, bright: 0 },
     hltext: { color: "#fdd835", width: 14, size: 18, alpha: 100, bright: 0 },
     note: { color: "#fff59d", width: 2, size: 16, alpha: 255, bright: 0 },
+    erase: { color: "#808080", width: 20, size: 18, alpha: 255, bright: 0 },       // eraser: width = its diameter (page units)
   };
 }
 const HANDLE_R = 7;                       // drawn handle radius (screen px)
@@ -59,12 +61,13 @@ export class Panel {
     this.sizeJobs = new Map(); this.offs = null; this.docW = 595; this.docH = 842; this.vp = 0; this.vpLock = null; this.fling = 0;
     this.fmt = { dir: "ltr", align: "left" }; this.fmtKey = "";      // text direction / alignment used for new text
     this.shapeKind = "rect"; this.fillOn = false; this.fillKey = "";  // Shapes tool: active shape + Fill switch
-    this._bc = new WeakMap();
+    this._bc = new WeakMap(); this.eraserPos = null;
     this.connStyle = "curve"; this.connArrow = true; this.nodeKind = "round"; this.mindKey = ""; this.linkTarget = null; this._nm = null;   // mind map defaults
     if (kind === "nb") { this.layout(); this.view.ty = 14; }
     if (kind === "board") this.layout();
     this._raf = 0; this.barsOpen = true;
     this.buildDom();
+    if (this.shapeBtn) this.updateShapeBtn();               // (the Shapes button names the active shape from the start)
     this.setTool("pen", true);
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(this.stage);
@@ -169,6 +172,12 @@ export class Panel {
           "aria-pressed": "false", onclick: () => this.setTool(k) }, icon(k), el("span", { class: "lbl" }, TOOL_INFO[k][0]));
       }
       this.toolBtns[k] = x; toolBar.append(x);
+      if (k === "shape" && this.kind !== "board") {            // one button for the mind-map tools (Node, Link): same idea as the Shapes menu
+        this.mindBtn = el("button", { class: "btn tool", type: "button", "aria-label": "Mind map", "aria-haspopup": "menu", "aria-pressed": "false",
+          title: `Mind map: nodes and connectors (${K.TOOL_KEYS.node} node, ${K.TOOL_KEYS.link} link)`, onclick: () => this.openMindMenu() },
+          icon("node"), el("span", { class: "lbl" }, "Mind map"), icon("chevdown", "tiny"));
+        this.toolBtns.node = this.toolBtns.link = this.mindBtn; toolBar.append(this.mindBtn);
+      }
       if (SEP_AFTER.has(k)) toolBar.append(el("span", { class: "tsep" }));            // group: pointer | draw | text & shapes | mind map | hand
     }
     this.fillBtn = el("button", { class: "btn tool fillbtn", type: "button", "aria-label": "Fill", "aria-pressed": "false", disabled: true,
@@ -210,6 +219,7 @@ export class Panel {
     s.addEventListener("pointermove", (e) => this.onMove(e));
     s.addEventListener("pointerup", (e) => this.onUp(e));
     s.addEventListener("pointercancel", (e) => this.onUp(e, true));
+    s.addEventListener("pointerleave", () => { if (this.eraserPos && !this.action) { this.eraserPos = null; this.render(); } });
     s.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     s.addEventListener("contextmenu", (e) => e.preventDefault());
     this.root.addEventListener("pointerdown", () => this.app.setActive(this), true);
@@ -228,8 +238,10 @@ export class Panel {
   setTool(tool, silent = false, temp = false) {
     this.finishEdit();
     if (!temp) this.tempPrev = null;                                 // choosing a tool by hand ends any temporary switch
-    this.tool = tool; this.linkTarget = null;
+    this.tool = tool; this.linkTarget = null; if (tool !== "eraser") this.eraserPos = null;
+    this.colorBtn.disabled = tool === "eraser";                       // the eraser has a size but no colour
     for (const [k, x] of Object.entries(this.toolBtns)) { x.classList.toggle("on", k === tool); x.setAttribute("aria-pressed", String(k === tool)); }
+    if (this.mindBtn) { const on = tool === "node" || tool === "link"; this.mindBtn.classList.toggle("on", on); this.mindBtn.setAttribute("aria-pressed", String(on)); }
     this.stage.dataset.tool = tool;
     if (tool !== "select" && this.selected !== null && !temp) this.selected = null;
     const g = GROUP_OF_TOOL[tool];
@@ -273,7 +285,7 @@ export class Panel {
   }
   openBrush() {
     this.finishEdit();
-    const box = brushContent({ getStyle: () => this.curStyle, widthEnabled: this.tool !== "hltext",
+    const box = brushContent({ getStyle: () => this.curStyle, widthEnabled: this.tool !== "hltext", eraser: this.tool === "eraser",
       onInput: (k, v) => this.applyStyle(k, v, false), onCommit: (k, v) => this.applyStyle(k, v, true) });
     popup(this.brushBtn, box);
   }
@@ -576,6 +588,7 @@ export class Panel {
     this.msg.hidden = this.hasPage;
     if (!this.hasPage) return;
     this.drawDoc(ctx);
+    this.drawEraserCursor(ctx);
   }
   /** Continuous view (PDF and notebook): draws only the pages that are on screen. */
   drawDoc(ctx) {
@@ -597,7 +610,8 @@ export class Panel {
       if (list.length || (isCur && this.preview)) {
         ctx.save();
         ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
-        const o = board ? { theme: R.boardTheme(page.paper), bg: R.BOARD_COLORS[page.paper], nodes: this.nodeMapFor(list, isCur ? this.preview : null) } : {};
+        const nodes = this.nodeMapFor(list, isCur ? this.preview : null);
+        const o = board ? { theme: R.boardTheme(page.paper), bg: R.BOARD_COLORS[page.paper], nodes } : { nodes };
         const vis = board ? [-v.tx / s, -v.ty / s, (this.cw - v.tx) / s, (this.ch - v.ty) / s] : null;
         for (let k = 0; k < list.length; k++) {
           if (vis && list[k].t !== "conn") { const bb = this.boundsOf(list[k]); if (bb[2] < vis[0] || bb[0] > vis[2] || bb[3] < vis[1] || bb[1] > vis[3]) continue; }   // off-screen items are skipped
@@ -622,7 +636,7 @@ export class Panel {
   /** id -> node for the connectors of this item list (cached per list; extra = items being previewed, e.g. a node still being typed). */
   nodeMapFor(list, extra = null) {
     const ex = extra ? [].concat(extra) : [];
-    if (this.kind !== "board" || !(M.hasConns(list) || M.hasConns(ex))) return null;
+    if (!(M.hasConns(list) || M.hasConns(ex))) return null;
     const c = this._nm;
     if (c && c.list === list && c.extra === extra) return c.map;
     const map = M.nodeIndex(list); for (const d of ex) if (d.t === "node" && d.id) map.set(d.id, d);
@@ -684,7 +698,7 @@ export class Panel {
 
   // ------------------------------------------------------------- committing
   commit(newItems, { keepSel = false, select = null } = {}) {
-    if (this.kind === "board") newItems = M.pruneOrphans(newItems);     // a deleted node takes its connectors with it
+    newItems = M.pruneOrphans(newItems);                                  // a deleted node takes its connectors with it
     this.history.push(this.snap(), this.cur);
     this.pages[this.cur].items = newItems;
     this.live = null; this.preview = null;
@@ -780,7 +794,7 @@ export class Panel {
   }
   onMove(e) {
     const pt = this.pointers.get(e.pointerId);
-    if (!pt) return;
+    if (!pt) { this.onHover(e); return; }
     const l = this.local(e); pt.x = l.x; pt.y = l.y;
     if (this.gesture) { this.updateGesture(); return; }
     if (!this.action) return;
@@ -838,7 +852,7 @@ export class Panel {
       return;
     }
     if (t === "shape" || t === "hltext") { this.action = { type: "shape", p0: this.clampP(p), l0: l, moved: false }; return; }
-    if (t === "eraser") { this.live = this.items.slice(); this.action = { type: "erase" }; this.eraseAt(p); return; }
+    if (t === "eraser") { this.live = this.items.slice(); this.action = { type: "erase", last: p, changed: false }; this.eraseAt(p); return; }
     if (t === "text" || t === "note") { this.action = { type: "tap", p, l0: l, moved: false }; return; }
     if (t === "node") {                                       // tap empty space = new node; an item that is hit is selected / moved like with Select
       const idx = this.hit(p);
@@ -924,7 +938,8 @@ export class Panel {
     }
     if (a.type === "erase") {
       const live = this.live; this.live = null;
-      if (live && live.length !== this.items.length) this.commit(live); else this.render();
+      if (e.pointerType === "touch") this.eraserPos = null;
+      if (live && a.changed) this.commit(live); else this.render();
       return;
     }
     if (a.type === "move") {
@@ -1000,10 +1015,45 @@ export class Panel {
     if (kind.closed && this.fillOn) item.fill = st.color;                 // Fill on: interior in the drawing colour, outline stays
     return [item];
   }
+  eraserRadius() { return Math.max(1, this.groups.erase.width / 2); }
+  /**
+   * Eraser step: pen / marker strokes lose only the part under the eraser (swept from the previous position to p, so fast drags leave no gaps);
+   * every other item (shapes, text, nodes, connectors ...) is removed whole when touched, exactly as before.
+   * The whole drag is one undo step (see toolUp).
+   */
   eraseAt(p) {
-    const tol = this.tol(), live = this.live;
-    const keep = live.filter((_, i) => !this.hitItem(live, i, p, tol));
-    if (keep.length !== live.length) { this.live = keep; this.selected = null; this.render(); }
+    const a = this.action, prev = a && a.last ? a.last : p, r = this.eraserRadius(), tol = this.tol(), live = this.live;
+    const A = [prev.x, prev.y], Bp = [p.x, p.y], x0 = Math.min(A[0], Bp[0]) - r, y0 = Math.min(A[1], Bp[1]) - r, x1 = Math.max(A[0], Bp[0]) + r, y1 = Math.max(A[1], Bp[1]) + r;
+    let changed = false;
+    const out = [];
+    for (let i = 0; i < live.length; i++) {
+      const d = live[i];
+      if (d.t === "pen" || d.t === "mark") {
+        const bb = this.boundsOf(d);
+        if (bb[2] < x0 || bb[0] > x1 || bb[3] < y0 || bb[1] > y1) { out.push(d); continue; }           // far from the eraser
+        const pieces = M.erasePen(d, A, Bp, r);
+        if (pieces) { out.push(...pieces); changed = true; } else out.push(d);
+      } else if (this.hitItem(live, i, p, tol)) changed = true;
+      else out.push(d);
+    }
+    if (a) a.last = p;
+    const [sx, sy] = this.pageToScreen(p.x, p.y); this.eraserPos = { x: sx, y: sy };
+    if (changed) { this.live = out; this.selected = null; if (a) a.changed = true; }
+    this.render();
+  }
+  /** The eraser's outline follows the pointer (mouse / pen hover, or the finger while erasing). */
+  onHover(e) {
+    if (this.tool !== "eraser" || e.pointerType === "touch") return;
+    const l = this.local(e); this.eraserPos = { x: l.x, y: l.y }; this.render();
+  }
+  drawEraserCursor(ctx) {
+    if (this.tool !== "eraser" || !this.eraserPos || this.root.hidden) return;
+    const r = Math.max(2, this.eraserRadius() * this.view.scale), { x, y } = this.eraserPos;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = "rgba(120,120,120,.12)"; ctx.fill();
+    ctx.lineWidth = 2.6; ctx.strokeStyle = "rgba(255,255,255,.92)"; ctx.stroke();
+    ctx.lineWidth = 1.2; ctx.strokeStyle = "rgba(20,20,20,.85)"; ctx.stroke();
+    ctx.restore();
   }
   /** Rectangles (one per text line) covering the words between a and b (reading order). */
   regionRects(a, b) {
@@ -1107,10 +1157,23 @@ export class Panel {
     this.bgBtn.classList.toggle("on", dark);
     this.gridBtn.classList.toggle("on", !!this.pages[0]?.grid); this.gridBtn.setAttribute("aria-pressed", String(!!this.pages[0]?.grid));
   }
+  /** Grow nodes (of loaded documents) whose text does not fit inside them; never shrinks, so a size chosen by hand is kept. */
+  refitNodes() {
+    for (const pg of this.pages) {
+      pg.items = pg.items.map((d) => {
+        if (d.t !== "node") return d;
+        const fit = R.nodeFit(d, d.text), w = Math.abs(d.x2 - d.x1), h = Math.abs(d.y2 - d.y1);
+        if (w >= fit.w - 0.5 && h >= fit.h - 0.5) return d;
+        const x1 = Math.min(d.x1, d.x2), y1 = Math.min(d.y1, d.y2);
+        return { ...d, x1, y1, x2: Math.round((x1 + Math.max(w, fit.w)) * 100) / 100, y2: Math.round((y1 + Math.max(h, fit.h)) * 100) / 100 };
+      });
+    }
+  }
   boardData() { this.finishEdit(); const pg = this.pages[0]; return { paper: pg.paper, grid: !!pg.grid, items: pg.items.slice() }; }
   setBoard(data, name) {
     this.finishEdit();
     this.pages = [{ paper: data.paper, grid: !!data.grid, items: data.items.slice() }];
+    this.refitNodes();
     this.name = name; this.history.clear(); this.dirty = false; this.cur = 0; this.selected = null;
     this.syncInkToBg();
     this.view.init = !this.root.hidden;                                   // a hidden panel is centred when it is first shown
@@ -1149,6 +1212,14 @@ export class Panel {
   }
 
   // ------------------------------------------------------------------ mind map
+  openMindMenu() {                                    // PDF / notebook: choose the Node or Link tool
+    this.finishEdit();
+    const row = (tool, ic, label, desc) => el("button", { class: "mi" + (this.tool === tool ? " on" : ""), type: "button", role: "menuitemradio", "aria-checked": String(this.tool === tool),
+      title: desc, onclick: () => { closePopup(); this.setTool(tool); } }, icon(ic), el("span", { class: "mlab" }, label, el("small", {}, desc)), el("kbd", {}, K.TOOL_KEYS[tool]));
+    popup(this.mindBtn, el("div", { class: "menu mindmenu", role: "menu" },
+      row("node", "node", "Node", "Tap to add a node. Tab = child, Enter = sibling."),
+      row("link", "link", "Link", "Drag from one node to another to connect them.")));
+  }
   buildMindGroup() {
     const mb = (ic, title, fn) => el("button", { class: "btn tool fmt", type: "button", title, "aria-label": title, "aria-pressed": "false", onclick: fn }, icon(ic));
     const sep = () => el("span", { class: "fsep" });
@@ -1173,11 +1244,10 @@ export class Panel {
   selNode() { const d = this.selItem(); return d && d.t === "node" ? d : null; }
   mindState() {
     const d = this.selItem(), node = d && d.t === "node" ? d : null, conn = d && d.t === "conn" ? d : null;
-    return { show: this.kind === "board" && (this.tool === "node" || this.tool === "link" || !!node || !!conn), node, conn,
+    return { show: this.tool === "node" || this.tool === "link" || !!node || !!conn, node, conn,
       style: conn ? conn.style : this.connStyle, arrow: conn ? conn.arrow !== false : this.connArrow, kind: node ? node.kind : this.nodeKind };
   }
   updateMindUi() {
-    if (this.kind !== "board") return;
     const m = this.mindState(), hasParent = !!m.node && this.items.some((c) => c.t === "conn" && c.to === m.node.id);
     const key = [m.show, !!m.node, hasParent, !!m.conn, m.style, m.arrow, m.kind].join("|");
     if (key === this.mindKey) return;
@@ -1204,7 +1274,8 @@ export class Panel {
   }
   nodeProto(x1, y1, w = 120, h = 48) {
     const st = this.curStyle, f = this.fmt, r2 = (v) => Math.round(v * 100) / 100;
-    x1 = clamp(x1, 10, M.BOARD_W - w - 10); y1 = clamp(y1, 10, M.BOARD_H - h - 10);
+    const [PW, PH] = this.pageDims();
+    x1 = clamp(x1, 10, PW - w - 10); y1 = clamp(y1, 10, PH - h - 10);
     const n = { t: "node", id: M.newId(), kind: this.nodeKind, x1: r2(x1), y1: r2(y1), x2: r2(x1 + w), y2: r2(y1 + h), text: "", color: st.color,
       w: Math.max(1.5, st.width), size: st.size, dir: f.dir, align: "center", ...this.styleExtra() };
     if (this.fillOn) n.fill = st.color;
@@ -1225,7 +1296,7 @@ export class Panel {
     const P = M.nodeIndex(this.items).get(id ?? this.selNode()?.id);
     if (!P) { toast("Select a node first."); return; }
     const kids = this.childrenOf(P.id), w = 120, h = 48, px2 = Math.max(P.x1, P.x2), px1 = Math.min(P.x1, P.x2);
-    const x1 = kids.length ? Math.min(kids[0].x1, kids[0].x2) : (px2 + M.NODE_GAP_X + w <= M.BOARD_W - 20 ? px2 + M.NODE_GAP_X : px1 - M.NODE_GAP_X - w);
+    const x1 = kids.length ? Math.min(kids[0].x1, kids[0].x2) : (px2 + M.NODE_GAP_X + w <= this.pageDims()[0] - 20 ? px2 + M.NODE_GAP_X : px1 - M.NODE_GAP_X - w);
     const y1 = kids.length ? Math.max(...kids.map((k) => Math.max(k.y1, k.y2))) + M.NODE_GAP_Y : (P.y1 + P.y2) / 2 - h / 2;
     const n = this.nodeProto(x1, y1, w, h);
     this.revealBox(n.x1, n.y1, n.x2, n.y2);
@@ -1266,7 +1337,7 @@ export class Panel {
   }
   /** Keys for the board: Tab = child, Enter = sibling, F2 = edit, Shift+Delete = delete branch. */
   boardKey(e) {
-    if (this.kind !== "board" || this.editing || e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (this.editing || e.ctrlKey || e.metaKey || e.altKey) return false;
     const d = this.selItem();
     if (!d) return false;
     if (e.key === "Tab" && d.t === "node") { this.addChild(); return true; }
@@ -1363,7 +1434,7 @@ export class Panel {
         const d = { ...ed.proto, text, ...(ed.fmt || {}) };
         if (d.t === "note") d.h = Math.round(Math.max(d.h, R.noteNeededHeight(d, text)) * 100) / 100;
         if (d.t === "node") {                                   // size the new node to its text; it stays selected (Tab / Enter continue the map)
-          const fit = R.nodeFit(d, text); d.x2 = Math.round((d.x1 + fit.w) * 100) / 100; d.y2 = Math.round((d.y1 + fit.h) * 100) / 100;
+          const fit = R.nodeFit(d, text, ed.domH || 0); d.x2 = Math.round((d.x1 + fit.w) * 100) / 100; d.y2 = Math.round((d.y1 + fit.h) * 100) / 100;
           const at = this.items.length; this.commit([...this.items, d, ...(ed.extra || [])], { select: at });
         } else this.commit([...this.items, d]);
       } else { this.preview = null; this.render(); }
@@ -1380,7 +1451,7 @@ export class Panel {
     if (old.t === "node") {
       const fmtCh = !!ed.fmt && (ed.fmt.dir !== old.dir || ed.fmt.align !== old.align);
       if (text !== old.text || fmtCh) {
-        const d = { ...old, text, ...(ed.fmt || {}) }, fit = R.nodeFit(d, text);       // a node only grows to fit its text (a size set by hand is kept)
+        const d = { ...old, text, ...(ed.fmt || {}) }, fit = R.nodeFit(d, text, ed.domH || 0);       // a node only grows to fit its text (a size set by hand is kept)
         d.x2 = Math.round((Math.min(d.x1, d.x2) + Math.max(Math.abs(old.x2 - old.x1), fit.w)) * 100) / 100;
         d.y2 = Math.round((Math.min(d.y1, d.y2) + Math.max(Math.abs(old.y2 - old.y1), fit.h)) * 100) / 100;
         d.x1 = Math.min(old.x1, old.x2); d.y1 = Math.min(old.y1, old.y2);
@@ -1414,18 +1485,23 @@ export class Panel {
       ta.classList.add("conn"); ta.classList.remove("node");
       ta.style.fontSize = 15 * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
       ta.style.left = v.tx + (ox + g.mid[0] - w / 2) * s + "px"; ta.style.top = v.ty + (oy + g.mid[1] - 11) * s + "px";
-      ta.style.width = w * s + "px"; ta.style.height = 22 * s + "px"; ta.style.color = M.cssColor(d); ta.style.background = R.BOARD_COLORS[this.pages[0].paper];
+      ta.style.width = w * s + "px"; ta.style.height = 22 * s + "px"; ta.style.color = M.cssColor(d); ta.style.background = this.kind === "board" ? R.BOARD_COLORS[this.pages[0].paper] : "#ffffff";
       return;
     }
-    const fit = R.nodeFit(d, ta.value), x1 = Math.min(d.x1, d.x2), y1 = Math.min(d.y1, d.y2);
-    const w = ed.idx === null ? fit.w : Math.max(Math.abs(d.x2 - d.x1), fit.w), h = ed.idx === null ? fit.h : Math.max(Math.abs(d.y2 - d.y1), fit.h);
-    if (ed.idx === null) { d.x2 = x1 + w; d.y2 = y1 + h; }                                    // proto (still a preview): grows with the text
-    else if (Math.abs(d.x2 - d.x1) !== w || Math.abs(d.y2 - d.y1) !== h) { this.live = this.items.slice(); this.live[ed.idx] = { ...d, x1, y1, x2: x1 + w, y2: y1 + h }; }
-    const mw = Math.max(10, (w - 2 * M.NODE_PAD) / R.nodeEll(d)), L = R.layoutText(R.measureCtx(), ta.value || " ", d.size, mw, f);
+    // Width: from the canvas measurement. Height: from what the text box REALLY needs (scrollHeight), because the box and the canvas can wrap a
+    // line differently; a fixed height made the box scroll and hide the upper line while typing.
     ta.classList.add("node"); ta.classList.remove("conn");
     ta.style.fontSize = d.size * s + "px"; ta.style.lineHeight = "1.25"; ta.style.fontFamily = R.FONT_STACK;
-    ta.style.left = v.tx + (ox + x1 + (w - mw) / 2) * s + "px"; ta.style.top = v.ty + (oy + y1 + (h - L.height) / 2) * s + "px";
-    ta.style.width = mw * s + "px"; ta.style.height = Math.max(L.lh, L.height + 2) * s + "px";
+    const x1 = Math.min(d.x1, d.x2), y1 = Math.min(d.y1, d.y2), pre = R.nodeFit(d, ta.value), ell = R.nodeEll(d);
+    const w0 = ed.idx === null ? pre.w : Math.max(Math.abs(d.x2 - d.x1), pre.w), mw = Math.max(10, (w0 - 2 * M.NODE_PAD) / ell);
+    ta.style.width = mw * s + 1.5 + "px"; ta.style.height = "1px";                          // (1.5 px slack so the box never wraps earlier than the canvas)
+    const domH = ta.scrollHeight / s;
+    ed.domH = domH;
+    const fit = R.nodeFit(d, ta.value, domH), w = w0, h = ed.idx === null ? fit.h : Math.max(Math.abs(d.y2 - d.y1), fit.h);
+    if (ed.idx === null) { d.x2 = x1 + w; d.y2 = y1 + h; }                                    // proto (still a preview): grows with the text
+    else if (Math.abs(d.x2 - d.x1) !== w || Math.abs(d.y2 - d.y1) !== h) { this.live = this.items.slice(); this.live[ed.idx] = { ...d, x1, y1, x2: x1 + w, y2: y1 + h }; }
+    ta.style.left = v.tx + (ox + x1 + (w - mw) / 2) * s + "px"; ta.style.top = v.ty + (oy + y1 + (h - fit.textH) / 2) * s + "px";
+    ta.style.height = fit.textH * s + "px";
     ta.style.color = d.fill ? (M.parseHex(d.fill) && (0.299 * M.parseHex(d.fill)[0] + 0.587 * M.parseHex(d.fill)[1] + 0.114 * M.parseHex(d.fill)[2] > 150) ? "#111" : "#fff") : M.cssColor(d);
     ta.style.background = "transparent";
     this.render();
@@ -1512,6 +1588,7 @@ export class Panel {
     if (this.pdf) { try { await this.pdf.doc.destroy(); } catch { /* ignore */ } }
     this.pdf = { doc, source }; this.name = name;
     this.pages = (pages || Array.from({ length: doc.numPages }, () => [])).map((items) => ({ items: items.slice() }));
+    this.refitNodes();
     this.history.clear(); this.dirty = false; this.cur = 0;
     await this.showPage(0);
     this.app.onChange(this, { clean: true });
@@ -1551,6 +1628,7 @@ export class Panel {
   setNotebook(pages, name) {
     this.finishEdit();
     this.pages = pages.map((p) => ({ paper: p.paper, items: p.items.slice() }));
+    this.refitNodes();
     this.name = name; this.history.clear(); this.dirty = false; this.cur = 0;
     this.showPage(0);
     this.app.onChange(this, { clean: true });
@@ -1635,7 +1713,7 @@ export class Panel {
       let tool = tb.tool;
       if (OLD_SHAPE_TOOLS.includes(tool)) { this.shapeKind = tool; tool = "shape"; }   // workspaces from before the Shapes tool
       this.updateShapeBtn();
-      const allowed = this.kind === "pdf" ? PDF_TOOLS : this.kind === "board" ? BOARD_TOOLS : NB_TOOLS;
+      const allowed = this.kind === "pdf" ? [...PDF_TOOLS, ...MIND_TOOLS] : this.kind === "board" ? BOARD_TOOLS : [...NB_TOOLS, ...MIND_TOOLS];
       this.setTool(allowed.includes(tool) ? tool : this.tool);
     }
     if (typeof st.bars === "boolean") this.setBars(st.bars);

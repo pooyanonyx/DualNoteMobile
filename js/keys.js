@@ -44,11 +44,11 @@ export function isFocusedControl(t) {
 export const SHORTCUT_GROUPS = [
   ["Tools (when you are not typing)", [
     ["Select", "V"], ["Hand (move the view)", "H"], ["Pen", "P"], ["Marker", "M"], ["Eraser", "E"], ["Text", "T"], ["Note", "N"], ["Shapes", "S"],
-    ["Fill on / off (shapes, nodes)", "F"], ["Highlight text (PDF)", "U"], ["Node (board)", "O"], ["Link (board)", "L"]]],
+    ["Fill on / off (shapes, nodes)", "F"], ["Highlight text (PDF)", "U"], ["Mind map: node", "O"], ["Mind map: link", "L"]]],
   ["Hold for a moment", [["Hand tool while the key is held, then back to your tool", "Space"]]],
   ["Edit", [
     ["Undo", `${MOD}+Z`], ["Redo", `${MOD}+Shift+Z  /  ${MOD}+Y`], ["Delete the selected item", "Delete"], ["Deselect / close a menu", "Esc"],
-    ["Finish typing in a text box", `Esc  /  ${MOD}+Enter`], ["Board: child node / sibling node", "Tab  /  Enter"], ["Board: edit text, delete branch", "F2  /  Shift+Delete"]]],
+    ["Finish typing in a text box", `Esc  /  ${MOD}+Enter`], ["Mind map: child node / sibling node", "Tab  /  Enter"], ["Mind map: edit text, delete branch", "F2  /  Shift+Delete"]]],
   ["View", [
     ["Zoom in / out / fit", "+  /  -  /  0"], ["Scroll", "Arrow keys"], ["Scroll a screen up / down", "Page Up / Page Down"],
     ["First / last page (board: fit all)", "Home / End"], ["Previous / next page", "Alt+Left / Alt+Right"], ["Show / hide the toolbars", `${MOD}+.`]]],

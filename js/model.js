@@ -337,6 +337,64 @@ export function hitTest(d, x, y, tol, nodes = null) {
   }
   return false;                                              // text: measured by the renderer
 }
+// ------------------------------------------------------------------ partial eraser (pen / marker strokes)
+/** Part [t0,t1] (0..1) of the segment p0->p1 that lies inside the capsule = all points within r of the segment a->b (null if none). */
+export function segCapsuleInterval(p0, p1, a, b, r) {
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1], ivs = [];
+  const disk = (c) => {
+    const fx = p0[0] - c[0], fy = p0[1] - c[1], A = dx * dx + dy * dy, Bq = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - r * r;
+    if (A < 1e-12) return C <= 0 ? [0, 1] : null;
+    const disc = Bq * Bq - 4 * A * C;
+    if (disc < 0) return null;
+    const s = Math.sqrt(disc);
+    return [(-Bq - s) / (2 * A), (-Bq + s) / (2 * A)];
+  };
+  ivs.push(disk(a));
+  const ex = b[0] - a[0], ey = b[1] - a[1], L = Math.hypot(ex, ey);
+  if (L > 1e-9) {                                   // swept eraser: the two end disks + the rectangle between them (together: a convex capsule)
+    ivs.push(disk(b));
+    const ux = ex / L, uy = ey / L, vx = -uy, vy = ux;
+    const u0 = (p0[0] - a[0]) * ux + (p0[1] - a[1]) * uy, du = dx * ux + dy * uy, v0 = (p0[0] - a[0]) * vx + (p0[1] - a[1]) * vy, dv = dx * vx + dy * vy;
+    let lo = -Infinity, hi = Infinity, ok = true;
+    const clip = (q0, dq, qmin, qmax) => {
+      if (Math.abs(dq) < 1e-12) { if (q0 < qmin || q0 > qmax) ok = false; return; }
+      let t1 = (qmin - q0) / dq, t2 = (qmax - q0) / dq;
+      if (t1 > t2) [t1, t2] = [t2, t1];
+      lo = Math.max(lo, t1); hi = Math.min(hi, t2);
+    };
+    clip(u0, du, 0, L); clip(v0, dv, -r, r);
+    ivs.push(ok && lo <= hi ? [lo, hi] : null);
+  }
+  let lo = Infinity, hi = -Infinity;
+  for (const iv of ivs) { if (!iv) continue; const l = Math.max(0, iv[0]), h = Math.min(1, iv[1]); if (l <= h) { lo = Math.min(lo, l); hi = Math.max(hi, h); } }
+  return lo <= hi ? [lo, hi] : null;
+}
+const polyLen = (pts) => { let s = 0; for (let i = 0; i + 1 < pts.length; i++) s += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]); return s; };
+/**
+ * Erase the part of a pen / marker stroke covered by an eraser of radius r moving from point a to point b.
+ * Returns null when the stroke is untouched, otherwise the remaining pieces (0, 1 or more strokes with the same colour / width / alpha).
+ * The stroke is a line of thickness d.w with round ends, so the cut is made at r + w/2 from the eraser: the visible stroke then
+ * ends exactly at the eraser's edge.
+ */
+export function erasePen(d, a, b, r) {
+  const rr = r + d.w / 2, pts = d.pts, n = pts.length, r2 = (v) => Math.round(v * 100) / 100;
+  if (!n) return null;
+  if (n === 1) return distPointSegment(pts[0][0], pts[0][1], a[0], a[1], b[0], b[1]) <= rr ? [] : null;
+  const pieces = []; let cur = null, touched = false;
+  for (let i = 0; i + 1 < n; i++) {
+    const P = pts[i], Q = pts[i + 1], iv = segCapsuleInterval(P, Q, a, b, rr);
+    if (!iv) { if (!cur) cur = [P]; cur.push(Q); continue; }
+    touched = true;
+    const [t0, t1] = iv, at = (t) => [r2(P[0] + (Q[0] - P[0]) * t), r2(P[1] + (Q[1] - P[1]) * t)];
+    if (t0 > 1e-6) { if (!cur) cur = [P]; cur.push(at(t0)); }             // the part before the eraser
+    if (cur) { pieces.push(cur); cur = null; }
+    if (t1 < 1 - 1e-6) cur = [at(t1), Q];                                  // the part after the eraser continues the stroke
+  }
+  if (cur) pieces.push(cur);
+  if (!touched) return null;
+  return pieces.filter((pc) => pc.length >= 2 && polyLen(pc) >= 0.4).map((pc) => ({ ...d, pts: pc }));
+}
+
 /** Corner points of a t:"shape" item in page coordinates. */
 export function shapePoints(d) {
   const [x0, y0, x1, y1] = box(d), w = x1 - x0, h = y1 - y0;
@@ -452,7 +510,7 @@ export function parseNotebook(text) {
   return data.pages.map((p) => {
     if (!p || typeof p !== "object") throw new Error("Corrupt page data.");
     const paper = PAPERS.includes(p.paper) ? p.paper : "blank";
-    const items = (Array.isArray(p.items) ? p.items : []).map(sanitizeItem).filter(Boolean);
+    const items = pruneOrphans((Array.isArray(p.items) ? p.items : []).map(sanitizeItem).filter(Boolean));
     return { paper, items };
   });
 }
@@ -467,7 +525,7 @@ export function parsePdfAnnotations(raw, pageCount) {
   const out = [];
   for (const p of data.pages) {
     if (!Array.isArray(p)) return null;
-    out.push(p.map(sanitizeItem).filter(Boolean));
+    out.push(pruneOrphans(p.map(sanitizeItem).filter(Boolean)));
   }
   return out;
 }

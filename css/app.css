@@ -66,7 +66,8 @@ select.paper { min-height:28px; font:inherit; font-size:12px; border:1px solid v
 .stage { position:absolute; inset:0; overflow:hidden; touch-action:none; background:#c9ccd1; outline:none; }
 .stage canvas.view { position:absolute; inset:0; display:block; touch-action:none; }
 .stage[data-tool="pen"], .stage[data-tool="mark"], .stage[data-tool="line"], .stage[data-tool="arrow"], .stage[data-tool="rect"],
-.stage[data-tool="ellipse"], .stage[data-tool="hltext"], .stage[data-tool="eraser"] { cursor:crosshair; }
+.stage[data-tool="ellipse"], .stage[data-tool="hltext"] { cursor:crosshair; }
+.stage[data-tool="eraser"] { cursor:none; }              /* the eraser draws its own outline (its real size) */
 .stage[data-tool="text"], .stage[data-tool="note"] { cursor:text; }
 .stage[data-tool="pan"] { cursor:grab; }
 textarea.editor { position:absolute; z-index:5; margin:0; padding:0; border:1.5px dashed var(--accent); border-radius:2px; outline:none; resize:none; overflow:hidden;
@@ -81,16 +82,22 @@ textarea.editor.note { border-color:rgba(0,0,0,.35); }
 .popup { position:fixed; z-index:50; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(0,0,0,.25); padding:10px; max-width:calc(100vw - 16px); overflow:auto; }
 .menu { display:flex; flex-direction:column; min-width:220px; }
 .mi { display:flex; align-items:center; gap:8px; border:0; background:transparent; padding:12px; font:inherit; text-align:left; border-radius:8px; cursor:pointer; }
+.touchtip { position:fixed; z-index:2000; max-width:260px; padding:7px 11px; border-radius:9px; background:#1f2933; color:#fff; font:12.5px/1.35 system-ui, sans-serif;
+  box-shadow:0 4px 16px rgba(0,0,0,.38); pointer-events:none; opacity:0; transition:opacity .12s; }
+.touchtip.show { opacity:1; } .touchtip b { display:block; font-weight:600; font-size:13px; } .touchtip span { display:block; margin-top:1px; color:#d5dbe3; }
+@media (prefers-reduced-motion: reduce) { .touchtip { transition:none; } }
+.btn, .segbtn, .shp, .mi, .phead button { -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }   /* a long press must not select text or open the system callout */
 .kbdlist { max-height:min(60vh, 520px); overflow:auto; padding-right:6px; } .kbdlist .kgroup { margin:0 0 10px; } .kbdlist h3 { margin:6px 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:#64748b; }
 .krow { display:flex; justify-content:space-between; gap:16px; padding:2px 0; font-size:13px; } .krow .keys { white-space:nowrap; color:#64748b; }
 kbd { display:inline-block; min-width:18px; padding:1px 6px; border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; background:#f8fafc; color:#1e293b; font:600 11px/1.5 system-ui, sans-serif; text-align:center; }
+.mindmenu .mi { display:flex; align-items:center; gap:10px; width:100%; text-align:left; } .mindmenu .mlab { display:flex; flex-direction:column; flex:1; font-weight:600; } .mindmenu .mlab small { font-weight:400; color:#64748b; max-width:200px; white-space:normal; }
 .tsep { width:1px; height:18px; background:var(--line); margin:0 3px; flex:none; }
 .hactions { display:inline-flex; align-items:center; gap:3px; }
 .barsbtn .chev { transition:transform .15s; transform:rotate(-90deg); } .barsbtn.open .chev { transform:none; }
 .phead .btn.small.icon-only { min-width:24px; padding:1px 4px; }
 .arrange .arow { display:flex; align-items:center; gap:6px; margin:6px 0; } .arrange .anum { width:18px; color:#64748b; text-align:center; }
 .arrange select { flex:1; min-height:30px; font:inherit; border:1px solid var(--line); border-radius:7px; padding:0 6px; background:#fff; } .arrange .btn.small { min-width:28px; }
-textarea.editor.node, textarea.editor.conn { resize:none; overflow:hidden; border-color:transparent; text-align:center; } textarea.editor.node { background:transparent !important; }
+textarea.editor.node, textarea.editor.conn { resize:none; overflow:hidden; border-color:transparent; text-align:center; } textarea.editor.node { background:transparent !important; border:0; padding:0; outline:none; }
 .mindgrp { margin-left:2px; }
 .mh { padding:6px 12px 2px; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:#64748b; }
 .msep { height:1px; background:var(--line); margin:4px 0; }

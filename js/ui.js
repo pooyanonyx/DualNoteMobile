@@ -201,11 +201,18 @@ const toStyle = (k, v) => (k === "alpha" ? Math.round(v * 255 / 100) : v);
 
 /** Sliders for thickness/opacity/brightness/text size with live preview.
  *  onInput(key, value) fires while dragging; onCommit(key, value) when released/changed. */
-export function brushContent({ getStyle, onInput, onCommit, widthEnabled = true }) {
+export function brushContent({ getStyle, onInput, onCommit, widthEnabled = true, eraser = false }) {
   const rows = {}, prev = el("canvas", { class: "bprev", width: 440, height: 116 });
   const drawPreview = () => {
     const st = getStyle(), ctx = prev.getContext("2d"), w = prev.width, h = prev.height;
     for (let y = 0; y < h; y += 16) for (let x = 0; x < w; x += 16) { ctx.fillStyle = ((x + y) / 16) % 2 ? "#dcdcdc" : "#fff"; ctx.fillRect(x, y, 16, 16); }
+    if (eraser) {                                                  // a stroke with the part the eraser removes cut out, and the eraser's outline
+      const gap = Math.min(2 * st.width, 100), cx = w / 2, cy = h / 2;
+      ctx.lineCap = "round"; ctx.strokeStyle = "#333"; ctx.lineWidth = 8;
+      ctx.beginPath(); ctx.moveTo(24, cy); ctx.lineTo(cx - gap / 2 - 4, cy); ctx.moveTo(cx + gap / 2 + 4, cy); ctx.lineTo(w - 24, cy); ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = "#1976d2"; ctx.beginPath(); ctx.arc(cx, cy, gap / 2, 0, Math.PI * 2); ctx.stroke();
+      return;
+    }
     const col = M.cssColor({ color: st.color, alpha: st.alpha, bright: st.bright });
     ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = col; ctx.lineWidth = Math.min(2 * st.width, 56);
     ctx.beginPath(); ctx.moveTo(28, h * 0.7); ctx.bezierCurveTo(w * 0.25, h * 0.0, w * 0.45, h * 1.15, w * 0.62, h * 0.35); ctx.stroke();
@@ -213,7 +220,9 @@ export function brushContent({ getStyle, onInput, onCommit, widthEnabled = true 
     ctx.fillText("Aa", w * 0.86, h / 2);
   };
   const box = el("div", { class: "brush" });
-  for (const [key, label, lo, hi, fmt] of BRUSH) {
+  for (const [key, label0, lo0, hi0, fmt] of BRUSH) {
+    if (eraser && key !== "width") continue;                       // the eraser only has a size
+    const label = eraser ? "Eraser size" : label0, lo = eraser ? 4 : lo0, hi = eraser ? 120 : hi0;
     const val = el("span", { class: "bval" });
     const sl = el("input", { type: "range", min: lo, max: hi, step: 1, "aria-label": label });
     sl.addEventListener("input", () => { val.textContent = fmt(+sl.value); onInput?.(key, toStyle(key, +sl.value)); drawPreview(); });
@@ -223,7 +232,7 @@ export function brushContent({ getStyle, onInput, onCommit, widthEnabled = true 
   }
   box.append(prev);
   const update = (st = getStyle(), widthOn = widthEnabled) => {
-    for (const [key] of BRUSH) { const r = rows[key]; r.sl.value = toSlider(key, st[key]); r.val.textContent = r.fmt(+r.sl.value); }
+    for (const [key] of BRUSH) { const r = rows[key]; if (!r) continue; r.sl.value = toSlider(key, st[key]); r.val.textContent = r.fmt(+r.sl.value); }
     rows.width.sl.disabled = !widthOn;
     drawPreview();
   };

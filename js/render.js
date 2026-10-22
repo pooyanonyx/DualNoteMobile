@@ -31,6 +31,17 @@ export function effectiveFmt(d) {
   const rtl = isRtl(String(d.text || ""));
   return { dir: rtl ? "rtl" : "ltr", align: rtl ? "right" : "left" };
 }
+const segmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+const graphemes = (s) => (segmenter ? [...segmenter.segment(s)].map((x) => x.segment) : Array.from(s));       // (keeps Persian letters + marks together)
+function breakWord(ctx, word, maxWidth) {
+  const parts = []; let cur = "";
+  for (const g of graphemes(word)) {
+    const t = cur + g;
+    if (cur && ctx.measureText(t).width > maxWidth) { parts.push(cur); cur = g; } else cur = t;
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
 /** Break text into lines. maxWidth = null: only explicit newlines. fmt: explicit {dir, align} or null. */
 export function layoutText(ctx, text, size, maxWidth = null, fmt = null) {
   ctx.font = `${size}px ${FONT_STACK}`;
@@ -43,6 +54,11 @@ export function layoutText(ctx, text, size, maxWidth = null, fmt = null) {
       const test = cur ? cur + " " + word : word;
       if (!cur || ctx.measureText(test).width <= maxWidth) cur = test;
       else { push(cur); cur = word; }
+      if (ctx.measureText(cur).width > maxWidth) {                  // a word wider than the line: break it between letters (as the text box does)
+        const parts = breakWord(ctx, cur, maxWidth);
+        for (let i = 0; i < parts.length - 1; i++) push(parts[i]);
+        cur = parts[parts.length - 1];
+      }
     }
     push(cur);
   }
@@ -212,9 +228,10 @@ const contrastOn = (hex) => { const c = M.parseHex(hex) || [255, 255, 255]; retu
 export const nodeFmt = (d) => fmtOf(d) || { dir: isRtl(String(d.text || "")) ? "rtl" : "ltr", align: "center" };
 export const nodeEll = (d) => (d.kind === "ellipse" ? 1.35 : 1);          // an ellipse holds less text than a rectangle of the same size
 /** Size (w,h) a node needs for this text. */
-export function nodeFit(d, text) {
+export function nodeFit(d, text, domTextH = 0) {
   const ell = nodeEll(d), pad = M.NODE_PAD, L = layoutText(measureCtx(), text || " ", d.size, (M.NODE_MAX_W - 2 * pad) / ell, nodeFmt({ ...d, text }));
-  return { w: Math.max(M.NODE_MIN_W, Math.min(M.NODE_MAX_W, Math.ceil((L.width + 2 * pad) * ell))), h: Math.max(M.NODE_MIN_H, Math.ceil((L.height + 2 * pad) * ell)) };
+  const textH = Math.max(L.height, domTextH);                 // domTextH: what the real text box needed (it may wrap a line differently from the canvas)
+  return { w: Math.max(M.NODE_MIN_W, Math.min(M.NODE_MAX_W, Math.ceil((L.width + 2 * pad) * ell))), h: Math.max(M.NODE_MIN_H, Math.ceil((textH + 2 * pad) * ell)), textH };
 }
 function nodePath(ctx, d) {
   const x = Math.min(d.x1, d.x2), y = Math.min(d.y1, d.y2), w = Math.abs(d.x2 - d.x1), h = Math.abs(d.y2 - d.y1);
@@ -352,7 +369,8 @@ export function renderPage(canvas, w, h, items, { paper = null, scale = 2 } = {}
   ctx.scale(scale, scale);
   if (paper) drawPaper(ctx, w, h, paper);
   ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();         // nothing outside the page
-  for (const d of items) drawItem(ctx, d);
+  const nodes = M.hasConns(items) ? M.nodeIndex(items) : null;      // mind-map connectors are drawn between their nodes (annotated-PDF / notebook export)
+  for (const d of items) drawItem(ctx, d, { nodes });
   ctx.restore();
   return canvas;
 }

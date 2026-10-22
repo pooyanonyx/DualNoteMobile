@@ -1,6 +1,7 @@
 // DualNote (web / Android): application shell - layout, workspace files, autosave, dialogs, shortcuts.
 import * as M from "./model.js";
 import * as K from "./keys.js";
+import { initTouchTips } from "./tips.js";
 import * as WS from "./workspace.js";
 import { Panel } from "./panel.js";
 import { setImageLoadedCallback } from "./render.js";
@@ -50,6 +51,7 @@ export class App {
     window.addEventListener("beforeunload", (e) => { this.flushAutosave(); if (this.anyDirty() && !this.autosaveOk) { e.preventDefault(); e.returnValue = ""; } });
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") this.flushAutosave(); });
     window.addEventListener("pagehide", () => this.flushAutosave());
+    initTouchTips();                                      // press-and-hold bubbles for touch / pen (desktop keeps the browser tooltip)
     document.addEventListener("keydown", (e) => this.onKey(e));
     document.addEventListener("keyup", (e) => { if (K.keyName(e) === " ") this.endTempHand(); });          // releasing Space returns to the previous tool
     window.addEventListener("blur", () => this.endTempHand());
@@ -302,10 +304,12 @@ export class App {
   async help() {
     const r = await dialog({ title: "DualNote - quick help", buttons: [{ label: "Keyboard shortcuts", value: "keys" }, { label: "Close", value: true, primary: true }], content: el("div", { class: "help" },
       el("p", {}, el("b", {}, "Touch: "), "one finger draws with the chosen tool; two fingers scroll and pinch-zoom. With the Select or Hand tool, drag to scroll. While a pen/stylus is in use, finger touches are ignored (palm rejection)."),
-      el("p", {}, el("b", {}, "Board: "), "a big canvas for sketches and mind maps. Switch between a white board and a blackboard with the sun / moon button (your ink adapts, nothing is changed). Mind map: use the Node tool to add nodes, drag from a node with the Link tool to connect, Tab adds a child, Enter a sibling, double-tap a node or connector to edit its text."),
+      el("p", {}, el("b", {}, "Board: "), "a big canvas for sketches and mind maps (mind maps also work on PDF and notebook pages: use the Mind map button). Switch between a white board and a blackboard with the sun / moon button (your ink adapts, nothing is changed). Mind map: use the Node tool to add nodes, drag from a node with the Link tool to connect, Tab adds a child, Enter a sibling, double-tap a node or connector to edit its text."),
       el("p", {}, el("b", {}, "Layout: "), "the Layout menu chooses which panels the workspace has (up to three: PDF, Notebook, Board). Use “Customize panels…” for any order or a second PDF / Notebook / Board."),
       el("p", {}, el("b", {}, "PDF pages: "), "pages are laid out one after another - just scroll (mouse wheel, two fingers, or the Hand tool). The page box jumps to a page number; the arrows move one page."),
       el("p", {}, el("b", {}, "Edit: "), "Select an item to move it or drag the round handles to resize it. Double-tap text and notes to edit. Delete key or the Eraser removes items."),
+      el("p", {}, el("b", {}, "Eraser: "), "drag over a pen or marker stroke to erase only the part you touch (size: Brush button; the outline shows the area). Shapes, text and mind-map items are removed whole. Undo brings the erased part back."),
+      el("p", {}, el("b", {}, "Touch: "), "press and hold a toolbar button for a moment to read what it does (a short tap works as usual)."),
       el("p", {}, el("b", {}, "Keyboard: "), "V select, H hand (or hold Space), P pen, E eraser, T text ..., Ctrl+Z / Ctrl+Shift+Z undo / redo. Press ? for the full list."),
       el("p", {}, el("b", {}, "Pictures: "), "Press Ctrl+V (or the Paste button) to paste a screenshot, or use the Image button / drag a picture onto a page."),
       el("p", {}, el("b", {}, "Saving: "), "Save workspace keeps the PDF, all annotations and both notebooks in ONE file (also opens in the Windows app). Your session is also kept automatically on this device."),

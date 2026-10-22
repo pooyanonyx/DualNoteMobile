@@ -11,6 +11,7 @@
 "js/panel.js",
 "js/pdfio.js",
 "js/render.js",
+"js/tips.js",
 "js/ui.js",
 "js/workspace.js",
 "lib/LICENSE-jszip.txt",

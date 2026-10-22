@@ -16,7 +16,7 @@ Upload everything in this folder to the root of the repo (or any web server fold
 GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 
 ## Notes
-After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v12`) so devices pick up the update.
+After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v14`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
 
 ## Text direction and alignment
@@ -48,3 +48,15 @@ All shortcuts live in `js/keys.js` (one table used by the key handler, the toolt
 `App.onKey` in `js/app.js`; panel-specific keys are in `Panel.handleKey` / `Panel.boardKey`. Keys are matched with `keyName()`, which falls
 back to the physical key on non-Latin layouts (Persian) so Ctrl+Z, P, V ... work there too. Order of precedence: open dialog > Ctrl+S >
 text field (typing owns the keyboard) > keyboard-focused button (Enter / Space activate it) > open menu > shortcuts.
+
+## Eraser
+`model.erasePen()` cuts the part of a pen / marker stroke that the eraser (a swept circle, radius = Brush size / 2, cut at r + stroke width / 2) covers and
+returns the remaining pieces; `Panel.eraseAt()` applies it per pointer move. A whole drag is one undo step. Other item types are removed whole, as before.
+
+## Touch tooltips
+`js/tips.js`: on touch / pen, holding a toolbar button for ~0.5 s shows its `title` (+ name) in a bubble; the release then does not click the button.
+Mouse users keep the browser's own tooltip.
+
+## Mind map on every panel
+Nodes / connectors (`node`, `conn` items) live in the page's item list on PDF, notebook and board panels; connectors reference node ids and are drawn between them
+(also in exports). Node text is wrapped like the text box (long words are broken between letters) and a node always grows to fit its text.
