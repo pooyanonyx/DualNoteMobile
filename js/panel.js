@@ -19,10 +19,10 @@ const TOOL_INFO = {
 };
 const PDF_TOOLS = ["select", "pen", "mark", "hltext", "eraser", "text", "note", "shape", "pan"];
 const NB_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
-const BOARD_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "node", "link", "pan"];
+const BOARD_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
 const SEP_AFTER = new Set(["select", "eraser", "shape", "link"]);
 const GROUP_OF_TOOL = { eraser: "erase", pen: "draw", text: "draw", shape: "draw", node: "draw", link: "draw", mark: "mark", hltext: "hltext", note: "note" };
-const MIND_TOOLS = ["node", "link"];                  // on PDF / notebook panels these live in one "Mind map" menu button (on a board: two buttons)
+const MIND_TOOLS = ["node", "link"];                  // on every panel (PDF, notebook, board) these two tools live in one "Mind map" menu button
 const OLD_SHAPE_TOOLS = ["line", "arrow", "rect", "ellipse"];     // separate tools of older versions / workspaces -> Shapes tool
 const STYLE_TO_ITEM = { color: "color", width: "w", size: "size", alpha: "alpha", bright: "bright" };
 export function defaultGroups(color = "#d32f2f") {
@@ -172,7 +172,7 @@ export class Panel {
           "aria-pressed": "false", onclick: () => this.setTool(k) }, icon(k), el("span", { class: "lbl" }, TOOL_INFO[k][0]));
       }
       this.toolBtns[k] = x; toolBar.append(x);
-      if (k === "shape" && this.kind !== "board") {            // one button for the mind-map tools (Node, Link): same idea as the Shapes menu
+      if (k === "shape") {                                       // one button for the mind-map tools (Node, Link): same idea as the Shapes menu
         this.mindBtn = el("button", { class: "btn tool", type: "button", "aria-label": "Mind map", "aria-haspopup": "menu", "aria-pressed": "false",
           title: `Mind map: nodes and connectors (${K.TOOL_KEYS.node} node, ${K.TOOL_KEYS.link} link)`, onclick: () => this.openMindMenu() },
           icon("node"), el("span", { class: "lbl" }, "Mind map"), icon("chevdown", "tiny"));
@@ -1713,7 +1713,7 @@ export class Panel {
       let tool = tb.tool;
       if (OLD_SHAPE_TOOLS.includes(tool)) { this.shapeKind = tool; tool = "shape"; }   // workspaces from before the Shapes tool
       this.updateShapeBtn();
-      const allowed = this.kind === "pdf" ? [...PDF_TOOLS, ...MIND_TOOLS] : this.kind === "board" ? BOARD_TOOLS : [...NB_TOOLS, ...MIND_TOOLS];
+      const allowed = [...(this.kind === "pdf" ? PDF_TOOLS : this.kind === "board" ? BOARD_TOOLS : NB_TOOLS), ...MIND_TOOLS];
       this.setTool(allowed.includes(tool) ? tool : this.tool);
     }
     if (typeof st.bars === "boolean") this.setBars(st.bars);

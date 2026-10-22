@@ -16,7 +16,7 @@ Upload everything in this folder to the root of the repo (or any web server fold
 GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 
 ## Notes
-After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v14`) so devices pick up the update.
+After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v15`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
 
 ## Text direction and alignment
@@ -32,7 +32,7 @@ file. A PDF-only file has no `notebook.json`; a notebook-only file has no `pdf/`
 the automatic session backup) and returns when a layout with that panel is chosen again, but it is not written to the file.
 
 ## Board and mind map
-A Board is one large canvas (4000 x 3000 units) with the normal drawing tools plus **Node** and **Link**. Background: white or
+A Board is one large canvas (4000 x 3000 units) with the normal drawing tools plus the **Mind map** menu button (Node / Link), the same button as on PDF and notebook panels. Background: white or
 blackboard (the sun / moon button). Ink that is pure black (or pure white) is *drawn* in the opposite shade so it stays readable;
 the saved colours never change. Mind map items: `node` (id, kind, box, text, colours, optional fill) and `conn` (from/to node ids,
 style, arrow, optional label); a connector follows its nodes. Boards are saved as `board.json` / `board2.json` in a workspace and as
