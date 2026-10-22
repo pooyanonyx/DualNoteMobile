@@ -1,8 +1,8 @@
-# DualNote Mobile
+# NoteFlow Mobile
 
 PDF annotator and notebook side by side. Installable web app (PWA) that works offline.
 
-Live: https://pooyanonyx.github.io/DualNoteMobile/
+Live: https://pooyanonyx.github.io/NoteFlowMobile/
 
 ## Folder layout
 - `index.html`, `manifest.webmanifest`, `sw.js`, `precache.json` - app entry (must stay in the root)
