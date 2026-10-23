@@ -27,7 +27,7 @@ async function openRaw(bytes) {
   }
 }
 
-/** Open PDF bytes. If the file was saved by DualNote, the embedded original + editable annotations are used.
+/** Open PDF bytes. If the file was saved by NoteFlow, the embedded original + editable annotations are used.
  *  detectEmbedded=false is used for workspaces (they carry the annotations themselves). */
 export async function loadDocument(bytes, { detectEmbedded = true } = {}) {
   let source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -136,9 +136,9 @@ export async function exportAnnotatedPdf(source, pagesItems, onProgress = () => 
     await new Promise((r) => setTimeout(r));                // let the UI breathe on phones
   }
   const enc = new TextEncoder();
-  await out.attach(source, M.EMBED_SRC, { mimeType: "application/pdf", description: "Original PDF (DualNote)" });
+  await out.attach(source, M.EMBED_SRC, { mimeType: "application/pdf", description: "Original PDF (NoteFlow)" });
   await out.attach(enc.encode(M.pdfAnnotationsToJson(pagesItems)), M.EMBED_JSON,
-    { mimeType: "application/json", description: "Editable annotations (DualNote)" });
+    { mimeType: "application/json", description: "Editable annotations (NoteFlow)" });
   return out.save();
 }
 

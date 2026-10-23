@@ -1,4 +1,4 @@
-// DualNote (web / Android): application shell - layout, workspace files, autosave, dialogs, shortcuts.
+// NoteFlow: application shell - layout, workspace files, autosave, dialogs, shortcuts.
 import * as M from "./model.js";
 import * as K from "./keys.js";
 import { initTouchTips } from "./tips.js";
@@ -19,7 +19,7 @@ const idb = {
   open() {
     if (this.db) return this.db;
     return (this.db = new Promise((res, rej) => {
-      const r = indexedDB.open("dualnote", 1);
+      const r = indexedDB.open("dualnote", 1);   // (the database keeps its old name so sessions saved before the rename are still found)
       r.onupgradeneeded = () => r.result.createObjectStore("kv");
       r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     }));
@@ -70,10 +70,10 @@ export class App {
     this.layoutBtn = b("layout", "Layout", "Choose the workspace layout (which panels it has)", () => this.openLayoutMenu());
     this.switchBtn = b("swap", "Switch", "Swap the left and right panels (nothing is closed or lost)", () => this.switchSides());
     this.seg = el("div", { class: "seg", role: "tablist" });
-    this.installBtn = b("plus", "Install", "Install DualNote as an app", async () => { if (this.installEvt) { this.installEvt.prompt(); this.installEvt = null; this.installBtn.hidden = true; } }, "primary");
+    this.installBtn = b("plus", "Install", "Install NoteFlow as an app", async () => { if (this.installEvt) { this.installEvt.prompt(); this.installEvt = null; this.installBtn.hidden = true; } }, "primary");
     this.installBtn.hidden = true;
     this.top = el("header", { class: "topbar" },
-      el("span", { class: "brand" }, "DualNote"),
+      el("span", { class: "brand" }, "NoteFlow"),
       b("open", "Open workspace", "Open a workspace file (.dnws)", () => this.wsOpenInput.click()),
       b("save", "Save workspace", "Save everything (PDF, annotations, notebooks) in one file (" + K.MOD + "+S)", () => this.saveWorkspace()),
       b("plus", "New", "Start a new empty workspace", () => this.newWorkspace()),
@@ -302,7 +302,7 @@ export class App {
       el("p", { class: "muted" }, "Shortcuts are switched off while you type in a text box, a field or a dialog, so letters and Space are always typed normally.")) });
   }
   async help() {
-    const r = await dialog({ title: "DualNote - quick help", buttons: [{ label: "Keyboard shortcuts", value: "keys" }, { label: "Close", value: true, primary: true }], content: el("div", { class: "help" },
+    const r = await dialog({ title: "NoteFlow - quick help", buttons: [{ label: "Keyboard shortcuts", value: "keys" }, { label: "Close", value: true, primary: true }], content: el("div", { class: "help" },
       el("p", {}, el("b", {}, "Touch: "), "one finger draws with the chosen tool; two fingers scroll and pinch-zoom. With the Select or Hand tool, drag to scroll. While a pen/stylus is in use, finger touches are ignored (palm rejection)."),
       el("p", {}, el("b", {}, "Board: "), "a big canvas for sketches and mind maps (mind maps also work on PDF and notebook pages: use the Mind map button). Switch between a white board and a blackboard with the sun / moon button (your ink adapts, nothing is changed). Mind map: use the Node tool to add nodes, drag from a node with the Link tool to connect, Tab adds a child, Enter a sibling, double-tap a node or connector to edit its text."),
       el("p", {}, el("b", {}, "Layout: "), "the Layout menu chooses which panels the workspace has (up to three: PDF, Notebook, Board). Use “Customize panels…” for any order or a second PDF / Notebook / Board."),
@@ -454,7 +454,7 @@ export class App {
 
 export async function start() {
   const app = new App(document.getElementById("app"));
-  window.dualnote = app;
+  window.noteflow = app;
   if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
   try { await navigator.storage?.persist?.(); } catch { /* ignore */ }
   await app.restoreAutosave();

@@ -1,4 +1,4 @@
-// DualNote workspace file (.dnws): the whole session in ONE file - a ZIP archive with the same layout
+// NoteFlow workspace file (.dnws): the whole session in ONE file - a ZIP archive with the same layout
 // as the Windows app writes, so workspaces open in both apps:
 //   manifest.json, settings.json, notebook.json, [notebook2.json], [board.json, board2.json],
 //   pdf/original.pdf + pdf/annotations.json, [pdf2/...]
@@ -23,7 +23,7 @@ async function pdfInfo(p) {
 export async function writeWorkspace({ pdf = null, pdf2 = null, notebook = null, notebook2 = null, board = null, board2 = null, settings = {}, type = null }) {
   const JSZip = globalThis.JSZip;
   const manifest = {
-    format: WORKSPACE_FORMAT, version: WORKSPACE_VERSION, app: "DualNote (web)",
+    format: WORKSPACE_FORMAT, version: WORKSPACE_VERSION, app: "NoteFlow (web)",
     saved: new Date().toISOString(),
     pdf: pdf ? await pdfInfo(pdf) : null, pdf2: pdf2 ? await pdfInfo(pdf2) : null,
     notebook_pages: notebook ? notebook.length : null, notebook2_pages: notebook2 ? notebook2.length : null,
@@ -49,7 +49,7 @@ export async function writeWorkspace({ pdf = null, pdf2 = null, notebook = null,
 export async function readWorkspace(data) {
   const JSZip = globalThis.JSZip;
   let zip;
-  try { zip = await JSZip.loadAsync(data); } catch { throw new Error("This is not a valid DualNote workspace file."); }
+  try { zip = await JSZip.loadAsync(data); } catch { throw new Error("This is not a valid NoteFlow workspace file."); }
   const need = async (name, type = "string") => {
     const f = zip.file(name);
     if (!f) throw new Error(`The workspace file is incomplete (missing ${name}).`);
@@ -60,10 +60,10 @@ export async function readWorkspace(data) {
     if (e.message.startsWith("The workspace")) throw e;
     throw new Error("The workspace manifest is unreadable.");
   }
-  if (!manifest || manifest.format !== WORKSPACE_FORMAT) throw new Error("This is not a DualNote workspace file.");
+  if (!manifest || manifest.format !== WORKSPACE_FORMAT) throw new Error("This is not a NoteFlow workspace file.");
   if (!Number.isInteger(manifest.version) || manifest.version < 1) throw new Error("The workspace has an invalid version number.");
   if (manifest.version > WORKSPACE_VERSION) {
-    throw new Error(`This workspace was saved by a newer version of DualNote (file version ${manifest.version}, this app reads up to ${WORKSPACE_VERSION}). Please update DualNote.`);
+    throw new Error(`This workspace was saved by a newer version of NoteFlow (file version ${manifest.version}, this app reads up to ${WORKSPACE_VERSION}). Please update NoteFlow.`);
   }
   let settings = {};
   try { const s = JSON.parse(await need("settings.json")); if (s && typeof s === "object" && !Array.isArray(s)) settings = s; } catch (e) {

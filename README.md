@@ -1,8 +1,8 @@
-# NoteFlow Mobile
+# NoteFlow
 
-PDF annotator and notebook side by side. Installable web app (PWA) that works offline.
+Annotate PDFs, write notebooks, sketch on a whiteboard or blackboard and build mind maps. An installable web app (PWA) that works offline in any browser, on PC, phone or tablet.
 
-Live: https://pooyanonyx.github.io/NoteFlowMobile/
+Live: `https://<your-github-user>.github.io/<repository-name>/` (the address depends on the name of your GitHub repository)
 
 ## Folder layout
 - `index.html`, `manifest.webmanifest`, `sw.js`, `precache.json` - app entry (must stay in the root)
@@ -16,7 +16,7 @@ Upload everything in this folder to the root of the repo (or any web server fold
 GitHub Pages: Settings -> Pages -> Deploy from a branch -> `main` / `(root)`.
 
 ## Notes
-After changing any file, bump `CACHE` in `sw.js` (e.g. `dualnote-v15`) so devices pick up the update.
+After changing any file, bump `CACHE` in `sw.js` (e.g. `noteflow-v18`) so devices pick up the update.
 If you add or remove files, update `precache.json`.
 
 ## Text direction and alignment
@@ -60,3 +60,9 @@ Mouse users keep the browser's own tooltip.
 ## Mind map on every panel
 Nodes / connectors (`node`, `conn` items) live in the page's item list on PDF, notebook and board panels; connectors reference node ids and are drawn between them
 (also in exports). Node text is wrapped like the text box (long words are broken between letters) and a node always grows to fit its text.
+
+## Name and compatibility
+The app is called **NoteFlow**. Some internal identifiers still carry the old name on purpose, because changing them would stop existing files and
+saved sessions from opening: the file-format tags inside `.dnws` / `.dnote` / `.dnboard` files and annotated PDFs (`DualNote-workspace`,
+`DualNote-notebook`, `DualNote-board`, `DualNote-pdf-annotations`), the names of the attachments embedded in annotated PDFs, and the name of the browser
+database that holds the automatic session backup. Users never see them.

@@ -1,4 +1,4 @@
-// DualNote data model (pure JavaScript, no DOM) - a port of model.py so that files made
+// NoteFlow data model (pure JavaScript, no DOM) - a port of model.py so that files made
 // by the Windows app and by this app are interchangeable.
 //
 // Every drawing is a small JSON object ("item") in page coordinates (PDF points):
@@ -15,6 +15,7 @@
 export const PAGE_W = 595.0, PAGE_H = 842.0;             // notebook page = A4 in points
 export const PAPERS = ["blank", "lined", "grid"];
 export const NOTE_W = 190.0, NOTE_H = 140.0, NOTE_HEADER = 16.0;
+// File-format identifiers keep their original "DualNote-..." names on purpose: existing files, annotated PDFs and the Windows app check them.
 export const NOTEBOOK_FORMAT = "DualNote-notebook";
 export const PDF_ANNOT_FORMAT = "DualNote-pdf-annotations";
 export const EMBED_SRC = "dualnote_source.pdf";
@@ -115,8 +116,8 @@ export function boardToJson(page) {
 /** -> {paper, grid, items}; throws Error with a readable message for foreign / damaged data. */
 export function parseBoard(text) {
   let data;
-  try { data = JSON.parse(text); } catch { throw new Error("Not a valid DualNote board file."); }
-  if (!data || typeof data !== "object" || data.format !== BOARD_FORMAT) throw new Error("Not a DualNote board file.");
+  try { data = JSON.parse(text); } catch { throw new Error("Not a valid NoteFlow board file."); }
+  if (!data || typeof data !== "object" || data.format !== BOARD_FORMAT) throw new Error("Not a NoteFlow board file.");
   const items = pruneOrphans((Array.isArray(data.items) ? data.items : []).map(sanitizeItem).filter(Boolean));
   return { paper: BOARD_BGS.includes(data.background) ? data.background : "white", grid: !!data.grid, items };
 }
@@ -504,8 +505,8 @@ export function notebookToJson(pages) {
 }
 export function parseNotebook(text) {
   let data;
-  try { data = JSON.parse(text); } catch { throw new Error("Not a valid DualNote notebook file."); }
-  if (!data || typeof data !== "object" || data.format !== NOTEBOOK_FORMAT) throw new Error("Not a DualNote notebook file.");
+  try { data = JSON.parse(text); } catch { throw new Error("Not a valid NoteFlow notebook file."); }
+  if (!data || typeof data !== "object" || data.format !== NOTEBOOK_FORMAT) throw new Error("Not a NoteFlow notebook file.");
   if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("The notebook has no pages.");
   return data.pages.map((p) => {
     if (!p || typeof p !== "object") throw new Error("Corrupt page data.");

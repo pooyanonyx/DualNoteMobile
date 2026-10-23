@@ -1,4 +1,4 @@
-// Drawing of DualNote items to a 2D canvas. The same code draws on screen and for PDF export,
+// Drawing of NoteFlow items to a 2D canvas. The same code draws on screen and for PDF export,
 // so what you see is what you export. Units are page points (1 pt = 1 user unit of the canvas).
 import * as M from "./model.js";
 

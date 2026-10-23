@@ -1,7 +1,8 @@
 {
-  "name": "DualNote",
-  "short_name": "DualNote",
-  "description": "PDF annotator and notebook side by side",
+  "name": "NoteFlow",
+  "short_name": "NoteFlow",
+  "description": "Annotate PDFs, write notebooks, sketch on a whiteboard or blackboard and build mind maps. Works in any browser on PC, phone or tablet, online or offline.",
+  "lang": "en",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

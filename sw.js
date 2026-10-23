@@ -1,12 +1,12 @@
-// DualNote service worker: makes the app work offline after the first visit.
+// NoteFlow service worker: makes the app work offline after the first visit.
 // Bump CACHE when you change files so devices pick up the new version.
-const CACHE = "dualnote-v14";
+const CACHE = "noteflow-v17";
 
 self.addEventListener("install", (e) => {
   e.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     const list = await (await fetch("precache.json", { cache: "reload" })).json();
-    await cache.addAll(list);
+    await cache.addAll(list.map((u) => new Request(u, { cache: "reload" })));         // always the files on the server, never an older browser-cached copy
     await self.skipWaiting();
   })());
 });
@@ -25,7 +25,7 @@ self.addEventListener("fetch", (e) => {
     const hit = await cache.match(req, { ignoreSearch: true });
     if (heavy && hit) return hit;                                   // libraries never change: cache first
     try {                                                           // app files: network first, so updates arrive
-      const res = await fetch(req);
+      const res = await fetch(req, { cache: "no-cache" });                   // ask the server if the file changed (a stale browser-cached copy is never used)
       if (res.ok) cache.put(req, res.clone());
       return res;
     } catch (err) {
