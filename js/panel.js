@@ -17,10 +17,10 @@ const TOOL_INFO = {
   link: ["Link", "Mind map: drag from one node to another to connect them (drop on empty space = new node)"],
   pan: ["Hand", "Drag to scroll"],
 };
-const PDF_TOOLS = ["select", "pen", "mark", "hltext", "eraser", "text", "note", "shape", "pan"];
-const NB_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
-const BOARD_TOOLS = ["select", "pen", "mark", "eraser", "text", "note", "shape", "pan"];
-const SEP_AFTER = new Set(["select", "eraser", "shape", "link"]);
+const PDF_TOOLS = ["select", "pan", "pen", "mark", "hltext", "eraser", "text", "note", "shape"];
+const NB_TOOLS = ["select", "pan", "pen", "mark", "eraser", "text", "note", "shape"];
+const BOARD_TOOLS = ["select", "pan", "pen", "mark", "eraser", "text", "note", "shape"];
+const SEP_AFTER = new Set(["pan", "eraser", "shape", "link"]);
 const GROUP_OF_TOOL = { eraser: "erase", pen: "draw", text: "draw", shape: "draw", node: "draw", link: "draw", mark: "mark", hltext: "hltext", note: "note" };
 const MIND_TOOLS = ["node", "link"];                  // on every panel (PDF, notebook, board) these two tools live in one "Mind map" menu button
 const OLD_SHAPE_TOOLS = ["line", "arrow", "rect", "ellipse"];     // separate tools of older versions / workspaces -> Shapes tool
@@ -179,7 +179,7 @@ export class Panel {
           icon("node"), el("span", { class: "lbl" }, "Mind map"), icon("chevdown", "tiny"));
         this.toolBtns.node = this.toolBtns.link = this.mindBtn; toolBar.append(this.mindBtn);
       }
-      if (SEP_AFTER.has(k)) toolBar.append(el("span", { class: "tsep" }));            // group: pointer | draw | text & shapes | mind map | hand
+      if (SEP_AFTER.has(k)) toolBar.append(el("span", { class: "tsep" }));            // group: pointer & hand | draw | text & shapes & mind map
     }
     this.fillBtn = el("button", { class: "btn tool fillbtn", type: "button", "aria-label": "Fill", "aria-pressed": "false", disabled: true,
       title: "Fill closed shapes with the colour", onclick: () => this.toggleFill() }, icon("fill"), el("span", { class: "lbl" }, "Fill"));
