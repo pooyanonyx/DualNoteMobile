@@ -42,10 +42,11 @@ function breakWord(ctx, word, maxWidth) {
   if (cur) parts.push(cur);
   return parts;
 }
-/** Break text into lines. maxWidth = null: only explicit newlines. fmt: explicit {dir, align} or null. */
-export function layoutText(ctx, text, size, maxWidth = null, fmt = null) {
+/** Break text into lines. maxWidth = null: only explicit newlines. fmt: explicit {dir, align} or null.
+ *  ruled: the line pitch is a whole number of paper rules (ruledLH) instead of 1.25 x the font size. */
+export function layoutText(ctx, text, size, maxWidth = null, fmt = null, ruled = false) {
   ctx.font = `${size}px ${FONT_STACK}`;
-  const lh = size * 1.25, lines = [];
+  const lh = ruled ? ruledLH(size) : size * 1.25, lines = [];
   const push = (s) => lines.push({ text: s, w: ctx.measureText(s).width, rtl: fmt ? fmt.dir === "rtl" : isRtl(s) });
   for (const para of String(text).split("\n")) {
     if (maxWidth == null) { push(para); continue; }
@@ -68,7 +69,7 @@ export function layoutText(ctx, text, size, maxWidth = null, fmt = null) {
 export function textInnerWidth(d) { return d.w ? Math.max(10, d.w - 2 * TEXT_PAD) : null; }
 /** [x0, y0, x1, y1] of a text item (including its padding). */
 export function textBox(d) {
-  const mw = textInnerWidth(d), L = layoutText(measureCtx(), d.text, d.size, mw, fmtOf(d));
+  const mw = textInnerWidth(d), L = layoutText(measureCtx(), d.text, d.size, mw, fmtOf(d), d.ruled === true);
   return [d.x, d.y, d.x + (mw ? mw : L.width) + 2 * TEXT_PAD, d.y + L.height + 2 * TEXT_PAD];
 }
 export function noteTextWidth(d) { return Math.max(20, d.w - 16); }
@@ -76,6 +77,51 @@ export function noteTextWidth(d) { return Math.max(20, d.w - 16); }
 export function noteNeededHeight(d, text = d.text) {
   const L = layoutText(measureCtx(), text, d.size, noteTextWidth(d), fmtOf(d));
   return L.height + M.NOTE_HEADER + 12;
+}
+
+// ------------------------------------------------------------ writing on ruled paper
+// Text on lined paper behaves like handwriting on a real notebook: the line pitch of a text box is the pitch of the paper (or a whole
+// multiple of it for big letters) and the first line starts in a paper row, so EVERY line of EVERY text box rests on a printed rule,
+// whatever the font size and however many lines are written (there is no rounding that could add up from line to line).
+//   cell i of a ruled text item spans   [top + i*lh, top + (i+1)*lh]   with   top = d.y + TEXT_PAD   (always a rule position)
+//   the baseline of line i is           top + (i+1)*lh - RULED_LIFT     (a hair above the rule the line stands on)
+export const RULED_LEADING = 1.2;                       // a line needs at least this many font sizes of height, else it takes one more rule
+export const RULED_LIFT = 1;                            // baseline sits this far above its rule (points)
+export const ruledLH = (size) => M.RULE_PITCH * Math.max(1, Math.ceil(size * RULED_LEADING / M.RULE_PITCH - 1e-9));
+/** y of the last printed rule of a page of height h (same loop as drawPaper). */
+export function lastRuleY(h) { let y = M.RULE_TOP; while (y + M.RULE_PITCH < h - M.RULE_BOTTOM) y += M.RULE_PITCH; return y; }
+/** Nearest position of a paper rule (the lattice also continues above the first printed rule). */
+export const nearestRule = (y) => M.RULE_TOP + M.RULE_PITCH * Math.round((y - M.RULE_TOP) / M.RULE_PITCH);
+/** Item y for a new ruled text item that the user tapped at page y = py: the first line goes in the paper row that was tapped. */
+export function ruledYFromTap(py, size, pageH) {
+  let n = Math.max(-1, Math.floor((py - M.RULE_TOP) / M.RULE_PITCH));                         // row n lies between rule n and rule n + 1
+  const maxN = Math.floor((lastRuleY(pageH) - ruledLH(size) - M.RULE_TOP) / M.RULE_PITCH);     // the first line must still stand on a printed rule
+  n = Math.min(n, Math.max(-1, maxN));
+  return M.RULE_TOP + n * M.RULE_PITCH - TEXT_PAD;
+}
+/** A ruled text item moved onto the paper lattice (y -> the nearest row). Other items are returned unchanged. */
+export function ruledNormalize(d) {
+  if (!d || d.t !== "text" || d.ruled !== true) return d;
+  const y = Math.round((nearestRule(d.y + TEXT_PAD) - TEXT_PAD) * 100) / 100;
+  return y === d.y ? d : { ...d, y };
+}
+// Where does the browser put the baseline inside a line box? (distance from the top of a line box of the given line height to its baseline)
+// Measured, not computed from font metrics, so the text box that is shown while typing lands its baseline exactly on the rule that the
+// canvas draws the finished text on, whatever font the browser really uses.
+let _probe = null; const _baselines = new Map();
+export function domBaseline(fontPx, lineHeightPx) {
+  const key = fontPx.toFixed(3) + "|" + lineHeightPx.toFixed(3), hit = _baselines.get(key);
+  if (hit !== undefined) return hit;
+  if (!_probe) {
+    _probe = document.createElement("div"); _probe.setAttribute("aria-hidden", "true");
+    _probe.style.cssText = "position:fixed;left:-9999px;top:0;width:300px;margin:0;padding:0;border:0;overflow:hidden;visibility:hidden;pointer-events:none;white-space:pre;";
+    _probe.innerHTML = '<span>Hx\u0645</span><span style="display:inline-block;width:0;height:0"></span>';    // a zero-height inline-block sits ON the baseline
+    document.body.appendChild(_probe);
+  }
+  _probe.style.fontFamily = FONT_STACK; _probe.style.fontSize = fontPx + "px"; _probe.style.lineHeight = lineHeightPx + "px";
+  const b = _probe.lastChild.getBoundingClientRect().bottom - _probe.getBoundingClientRect().top;
+  if (!document.fonts || document.fonts.status === "loaded") _baselines.set(key, b);        // (not cached while the bundled font is still loading)
+  return b;
 }
 
 // ------------------------------------------------------------------- images
@@ -144,7 +190,7 @@ export function drawPaper(ctx, w, h, kind) {
   if (kind === "lined") {
     ctx.strokeStyle = "#b9d3ee"; ctx.lineWidth = 0.6;
     ctx.beginPath();
-    for (let y = 72; y < h - 30; y += 24) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    for (let y = M.RULE_TOP; y < h - M.RULE_BOTTOM; y += M.RULE_PITCH) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
     ctx.stroke();
     ctx.strokeStyle = "#eba3a3"; ctx.lineWidth = 0.8;
     ctx.beginPath(); ctx.moveTo(62, 0); ctx.lineTo(62, h); ctx.stroke();
@@ -164,12 +210,12 @@ export function drawPaper(ctx, w, h, kind) {
 // Lines are drawn with the browser's own text engine (canvas fillText): it shapes Persian/Arabic letters and runs the
 // Unicode bidi algorithm using ctx.direction as the paragraph direction. Alignment is physical (left/center/right), so
 // direction and alignment are independent. fmt = null: old items (per-line detected direction, RTL lines right-aligned).
-function drawTextLines(ctx, L, x, y, blockWidth, size, fill, fmt = null) {
+function drawTextLines(ctx, L, x, y, blockWidth, size, fill, fmt = null, ruled = false) {
   ctx.font = `${size}px ${FONT_STACK}`;
-  ctx.textBaseline = "top";
+  ctx.textBaseline = ruled ? "alphabetic" : "top";            // ruled: the line stands on its rule (exact baseline), else the old centred-in-the-line placement
   ctx.fillStyle = fill;
   L.lines.forEach((ln, i) => {
-    const ly = y + i * L.lh + (L.lh - size) / 2;
+    const ly = ruled ? y + (i + 1) * L.lh - RULED_LIFT : y + i * L.lh + (L.lh - size) / 2;
     const align = fmt ? fmt.align : (ln.rtl ? "right" : "left");
     ctx.direction = ln.rtl ? "rtl" : "ltr"; ctx.textAlign = align;
     const ax = align === "right" ? x + blockWidth : align === "center" ? x + blockWidth / 2 : x;
@@ -339,8 +385,8 @@ export function drawItem(ctx, d, opts = {}) {
     ctx.fillRect(Math.min(d.x1, d.x2), Math.min(d.y1, d.y2), Math.abs(d.x2 - d.x1), Math.abs(d.y2 - d.y1));
   } else if (t === "text") {
     if (!opts.skipText) {
-      const mw = textInnerWidth(d), fmt = fmtOf(d), L = layoutText(ctx, d.text, d.size, mw, fmt);
-      drawTextLines(ctx, L, d.x + TEXT_PAD, d.y + TEXT_PAD, mw ? mw : L.width, d.size, M.cssColor(d), fmt);
+      const mw = textInnerWidth(d), fmt = fmtOf(d), ruled = d.ruled === true, L = layoutText(ctx, d.text, d.size, mw, fmt, ruled);
+      drawTextLines(ctx, L, d.x + TEXT_PAD, d.y + TEXT_PAD, mw ? mw : L.width, d.size, M.cssColor(d), fmt, ruled);
     }
   } else if (t === "note") {
     drawNote(ctx, d, opts.skipText);

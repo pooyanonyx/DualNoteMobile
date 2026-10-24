@@ -46,6 +46,7 @@ A multi-page notebook for lecture notes, summaries and homework.
 - **Scroll through all your pages** in one continuous flow.
 - **Add a page** right after the one you are on, delete pages, or move them earlier or later.
 - **Pick your paper:** blank, lined or grid.
+- **Write on the lines.** On lined paper, text snaps to the ruling like handwriting: tap in a row, type, press Enter as often as you like, and every line stays on its printed line, at any text size, zoom or scroll position. Bigger letters simply take every second (or third) line. The **Snap to lines** button next to the text alignment buttons turns this off for text you want to place freely. Blank paper, grid paper, PDFs and boards keep ordinary free text.
 - Use every drawing and writing tool, and **export the notebook as a PDF** to share or print.
 
 ### Board: sketch and brainstorm

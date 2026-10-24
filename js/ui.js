@@ -71,6 +71,7 @@ const ICONS = {
   alignleft: P("M4 6h16M4 10h10M4 14h16M4 18h10"),
   aligncenter: P("M4 6h16M7 10h10M4 14h16M7 18h10"),
   alignright: P("M4 6h16M10 10h10M4 14h16M10 18h10"),
+  ruled: P("M4 7h16M4 12h16M4 17h16") + P("M7 14V8l-2 2M7 8l2 2"),
   brush: P("M18 3l3 3-9 9-3-3z") + P("M9 12c-3 0-4 2-4 4s-1 3-2 4c4 1 8-1 8-5"),
 };
 export function icon(name, cls = "") {

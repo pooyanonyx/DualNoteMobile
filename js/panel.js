@@ -60,6 +60,7 @@ export class Panel {
     this.rasters = new Map(); this.rasterJob = null; this.rasterTimer = 0; this.badPages = new Set();
     this.sizeJobs = new Map(); this.offs = null; this.docW = 595; this.docH = 842; this.vp = 0; this.vpLock = null; this.fling = 0;
     this.fmt = { dir: "ltr", align: "left" }; this.fmtKey = "";      // text direction / alignment used for new text
+    this.snapLines = true;                                          // text written on lined paper follows the printed rules (see render.js "writing on ruled paper")
     this.shapeKind = "rect"; this.fillOn = false; this.fillKey = "";  // Shapes tool: active shape + Fill switch
     this._bc = new WeakMap(); this.eraserPos = null;
     this.connStyle = "curve"; this.connArrow = true; this.nodeKind = "round"; this.mindKey = ""; this.linkTarget = null; this._nm = null;   // mind map defaults
@@ -196,8 +197,10 @@ export class Panel {
       right: fb("alignright", "Align text to the right", () => this.setFmt({ align: "right" })),
     };
     const F = this.fmtBtns;
+    this.snapBtn = fb("ruled", "Snap text to the ruled lines: every line sits on a line of the paper, whatever the text size", () => this.setSnap(!this.snapDisplay()));
+    this.snapSep = el("span", { class: "fsep" });
     this.fmtGroup = el("span", { class: "fmtgrp", role: "group", "aria-label": "Text direction and alignment", hidden: true },
-      F.ltr, F.rtl, el("span", { class: "fsep" }), F.left, F.center, F.right);
+      F.ltr, F.rtl, el("span", { class: "fsep" }), F.left, F.center, F.right, this.snapSep, this.snapBtn);
     for (const ev of ["pointerdown", "mousedown"]) this.fmtGroup.addEventListener(ev, (e) => e.preventDefault());   // keep the text cursor in the editor
     this.buildMindGroup();
     toolBar.append(this.fmtGroup, this.mindGroup, el("span", { class: "gap" }), this.colorBtn, this.brushBtn);
@@ -893,13 +896,13 @@ export class Panel {
     if (a.type === "move") {
       const dx = p.x - a.p0.x, dy = p.y - a.p0.y;
       if (!a.moved && Math.hypot(l.x - a.l0.x, l.y - a.l0.y) > 4) a.moved = true;
-      if (a.moved) { this.live = this.items.slice(); this.live[a.idx] = M.translate(a.orig, dx, dy); this.render(); }
+      if (a.moved) { this.live = this.items.slice(); this.live[a.idx] = this.settle(M.translate(a.orig, dx, dy)); this.render(); }
       return;
     }
     if (a.type === "resize") {
       const c = this.clampP(p);
       this.live = this.items.slice();
-      this.live[this.selected] = M.resizeItem(a.orig, a.h, c.x, c.y, a.tbox, a.e, e.shiftKey);
+      this.live[this.selected] = this.settle(M.resizeItem(a.orig, a.h, c.x, c.y, a.tbox, a.e, e.shiftKey));
       this.render(); return;
     }
     if (a.type === "tap" && Math.hypot(l.x - a.l0.x, l.y - a.l0.y) > 8) a.moved = true;
@@ -988,6 +991,10 @@ export class Panel {
       const bw = Math.min(M.TEXT_BOX_W, w - 8), f = this.fmt;     // new text is a box of fixed width, so alignment is visible; RTL boxes grow leftwards from the tap
       const proto = { t: "text", x: clamp(f.dir === "rtl" ? p.x - bw : p.x, 4, w - bw - 4), y: clamp(p.y - st.size * 0.7, 0, h - 10), w: bw, dir: f.dir, align: f.align,
         text: "", color: st.color, size: st.size, ...this.styleExtra() };
+      if (this.linedPage()) {                                  // lined paper: the first line goes in the tapped row, every line rests on a rule
+        proto.ruled = this.snapLines;
+        if (proto.ruled) proto.y = R.ruledYFromTap(p.y, st.size, h);
+      }
       this.startEdit(null, proto);
     } else {
       const proto = { t: "note", x: clamp(p.x, 0, w - M.NOTE_W), y: clamp(p.y, 0, h - M.NOTE_H), w: M.NOTE_W, h: M.NOTE_H, dir: this.fmt.dir, align: this.fmt.align,
@@ -1362,10 +1369,13 @@ export class Panel {
   }
   updateFmtUi() {
     const show = !!this.textTarget() || this.tool === "text" || this.tool === "note";
-    const f = show ? this.displayFmt() : null, key = f ? f.dir + "|" + f.align : "";
+    const f = show ? this.displayFmt() : null, snapShow = show && this.snapApplies(), snapOn = snapShow && this.snapDisplay();
+    const key = f ? f.dir + "|" + f.align + "|" + (snapShow ? (snapOn ? "S1" : "S0") : "-") : "";
     if (key === this.fmtKey) return;
     this.fmtKey = key; this.fmtGroup.hidden = !show;
     if (!f) return;
+    this.snapBtn.hidden = this.snapSep.hidden = !snapShow;
+    this.snapBtn.classList.toggle("on", snapOn); this.snapBtn.setAttribute("aria-pressed", String(snapOn));
     const on = { ltr: f.dir === "ltr", rtl: f.dir === "rtl", left: f.align === "left", center: f.align === "center", right: f.align === "right" };
     for (const [k, b] of Object.entries(this.fmtBtns)) { b.classList.toggle("on", on[k]); b.setAttribute("aria-pressed", String(on[k])); }
   }
@@ -1386,11 +1396,61 @@ export class Panel {
     this.fmtKey = ""; this.updateFmtUi(); this.render();
   }
 
+  // ------------------------------------------------- writing on the lines of lined paper
+  // A text item on lined paper is "ruled" (ruled: true): its line pitch and its baselines follow the printed rules, see render.js.
+  // New text on a lined page is ruled while "snap to lines" is on (default). Old text (no ruled flag) is moved onto the lines the
+  // first time it is edited; text made with snapping off (ruled: false) stays where it was put.
+  linedPage() { return this.kind === "nb" && this.pages[this.cur]?.paper === "lined"; }
+  /** Does the snap button make sense now? (text on a lined notebook page; not for sticky notes, mind-map nodes, PDFs or boards) */
+  snapApplies() {
+    if (!this.linedPage()) return false;
+    const d = this.textTarget();
+    return d ? d.t === "text" : this.tool === "text";
+  }
+  /** State shown on the snap button: the text being edited / selected, else the default for new text. */
+  snapDisplay() {
+    const d = this.textTarget();
+    if (d && d.t === "text") return (this.editing ? this.editedItem() : d).ruled === true;
+    return this.snapLines;
+  }
+  setSnap(on) {
+    this.snapLines = on;                                                // an explicit choice also becomes the default for new text
+    const ed = this.editing;
+    if (ed) {
+      const d = ed.idx !== null ? this.items[ed.idx] : ed.proto;
+      if (d && d.t === "text") { ed.ruled = on; this.positionEditor(); this.ta.focus({ preventScroll: true }); }
+    } else {
+      const d = this.textTarget();
+      if (d && d.t === "text" && (d.ruled === true) !== on) {
+        const n = on ? R.ruledNormalize({ ...d, ruled: true }) : { ...d, ruled: false };
+        const items = this.items.slice(); items[this.selected] = n; this.commit(items, { keepSel: true });
+      }
+    }
+    this.fmtKey = ""; this.updateFmtUi(); this.render();
+  }
+  /** Text item with the pending changes of the open editor applied (format, snap to lines). Other items are returned as they are. */
+  editedItem() {
+    const ed = this.editing;
+    if (!ed) return null;
+    const base = ed.idx !== null ? this.items[ed.idx] : ed.proto;
+    return base && base.t === "text" ? this.withEditState(base, ed) : base;
+  }
+  withEditState(base, ed) {
+    let d = ed.fmt ? { ...base, ...ed.fmt } : base;
+    const want = ed.ruled !== undefined ? ed.ruled : (base.ruled === undefined && ed.auto ? true : base.ruled);
+    if (want === true) d = R.ruledNormalize({ ...d, ruled: true });
+    else if (want === false && d.ruled !== false) d = { ...d, ruled: false };
+    return d;
+  }
+  /** A settled text item while it is moved / resized: ruled text always lands on the lines. */
+  settle(d) { return d && d.t === "text" && d.ruled === true ? R.ruledNormalize(d) : d; }
+
   // --------------------------------------------------------------- text edit
   startEdit(idx, proto = null, extra = null) {
     this.finishEdit();
     const d = idx !== null ? this.items[idx] : proto;
     this.editing = { idx, proto, fmt: null, extra };
+    if (idx !== null && d.t === "text" && d.ruled === undefined && this.snapLines && this.linedPage()) this.editing.auto = true;   // old text: put it on the lines
     this.ta.value = (d.t === "conn" ? d.label : d.text) || "";
     if (proto && proto.t === "node") this.preview = [proto, ...(extra || [])];       // the new node (and its link) is visible while its text is typed
     this.ta.hidden = false;
@@ -1402,7 +1462,7 @@ export class Panel {
   }
   positionEditor() {
     if (!this.editing) return;
-    const d = this.editing.idx !== null ? this.items[this.editing.idx] : this.editing.proto, v = this.view, ta = this.ta, s = v.scale;
+    const d = this.editedItem(), v = this.view, ta = this.ta, s = v.scale;
     if (!d) return;
     const [ox, oy] = this.origin();
     const f = this.editing.fmt || (d.t === "node" ? R.nodeFmt(d) : R.fmtOf(d));    // explicit format, or null = old item (direction auto-detected)
@@ -1414,6 +1474,8 @@ export class Panel {
       ta.style.left = v.tx + (ox + d.x + 8) * s + "px"; ta.style.top = v.ty + (oy + d.y + M.NOTE_HEADER + 4) * s + "px";
       ta.style.width = R.noteTextWidth(d) * s + "px"; ta.style.height = Math.max(40, (d.h - M.NOTE_HEADER - 8)) * s + "px";
       ta.style.color = M.noteTextColor({ color: d.color, bright: M.itemBright(d) }); ta.style.background = "transparent"; ta.classList.add("note");
+    } else if (d.ruled === true) {
+      this.positionRuledEditor(d, f);
     } else {
       const mw = R.textInnerWidth(d), L = R.layoutText(R.measureCtx(), ta.value || " ", d.size, mw, f);
       ta.style.left = v.tx + (ox + d.x + R.TEXT_PAD) * s + "px"; ta.style.top = v.ty + (oy + d.y + R.TEXT_PAD) * s + "px";
@@ -1421,6 +1483,26 @@ export class Panel {
       if (mw && ta.scrollHeight > ta.clientHeight) ta.style.height = ta.scrollHeight + "px";
       ta.style.color = M.cssColor(d); ta.style.background = "rgba(255,255,255,0.85)"; ta.classList.remove("note");
     }
+  }
+  /** Text box over ruled text while it is typed. Its line height is the (scaled) pitch of the paper and its first baseline is put exactly
+   *  on the baseline the canvas draws the finished text on, so lines stay on the rules while typing, pressing Enter, scrolling and zooming,
+   *  and the text does not move when the box closes. The box is also sized so the browser wraps where the canvas will. */
+  positionRuledEditor(d, f) {
+    const ta = this.ta, v = this.view, s = v.scale, [ox, oy] = this.origin(), px = (n) => n + "px";
+    const lh = R.ruledLH(d.size), lhPx = lh * s, mw = R.textInnerWidth(d);
+    ta.style.fontSize = px(d.size * s); ta.style.lineHeight = px(lhPx); ta.style.fontFamily = R.FONT_STACK;
+    ta.style.color = M.cssColor(d); ta.style.background = "transparent";            // the rules stay visible under the text while typing
+    const cs = getComputedStyle(ta), n = (k) => parseFloat(cs[k]) || 0;
+    const padX = n("borderLeftWidth") + n("paddingLeft") + n("borderRightWidth") + n("paddingRight");
+    const padY = n("borderTopWidth") + n("paddingTop") + n("borderBottomWidth") + n("paddingBottom");
+    const L = R.layoutText(R.measureCtx(), ta.value || " ", d.size, mw, f, true);
+    ta.style.width = px((mw ? mw : Math.max(140, L.width + d.size)) * s + padX);
+    ta.style.height = "0px";                                                          // whole number of rules, from the browser's own wrapping
+    const rows = Math.max(1, Math.round((ta.scrollHeight - n("paddingTop") - n("paddingBottom")) / lhPx));
+    ta.style.height = px(rows * lhPx + padY); ta.scrollTop = 0;                        // (the box shows every line: never scrolled by a caret on a new line)
+    const base = v.ty + (oy + d.y + R.TEXT_PAD + lh - R.RULED_LIFT) * s;              // screen y of the first baseline (as drawn on the canvas)
+    ta.style.left = px(v.tx + (ox + d.x + R.TEXT_PAD) * s - n("borderLeftWidth") - n("paddingLeft"));
+    ta.style.top = px(base - R.domBaseline(d.size * s, lhPx) - n("borderTopWidth") - n("paddingTop"));
   }
   finishEdit() {
     const ed = this.editing;
@@ -1431,7 +1513,7 @@ export class Panel {
     if (ed.idx !== null) this.live = null;
     if (ed.idx === null) {
       if (text.trim()) {
-        const d = { ...ed.proto, text, ...(ed.fmt || {}) };
+        const d0 = { ...ed.proto, text, ...(ed.fmt || {}) }, d = d0.t === "text" ? { ...this.withEditState(ed.proto, ed), text } : d0;
         if (d.t === "note") d.h = Math.round(Math.max(d.h, R.noteNeededHeight(d, text)) * 100) / 100;
         if (d.t === "node") {                                   // size the new node to its text; it stays selected (Tab / Enter continue the map)
           const fit = R.nodeFit(d, text, ed.domH || 0); d.x2 = Math.round((d.x1 + fit.w) * 100) / 100; d.y2 = Math.round((d.y1 + fit.h) * 100) / 100;
@@ -1461,8 +1543,9 @@ export class Panel {
     }
     if (old.t === "text" && !text.trim()) { items.splice(ed.idx, 1); this.commit(items); return; }
     const fmtChanged = !!ed.fmt && (ed.fmt.dir !== old.dir || ed.fmt.align !== old.align);
-    if (text !== old.text || fmtChanged) {
-      const d = { ...old, text, ...(ed.fmt || {}) };
+    const ruledChanged = old.t === "text" && ed.ruled !== undefined && (ed.ruled === true) !== (old.ruled === true);   // snap switched while editing
+    if (text !== old.text || fmtChanged || ruledChanged) {
+      const d = old.t === "text" ? { ...this.withEditState(old, ed), text } : { ...old, text, ...(ed.fmt || {}) };
       if (old.t === "note") d.h = Math.round(Math.max(old.h, R.noteNeededHeight(d, text)) * 100) / 100;
       items[ed.idx] = d; this.commit(items, { keepSel: true });
     } else this.render();
@@ -1695,7 +1778,7 @@ export class Panel {
     }
   }
   viewState() { return { zoom: Math.round(this.view.scale * 1e4) / 1e4, auto_fit: this.view.fit, page: this.shown(), bars: this.barsOpen,
-    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt }, shape: this.shapeKind, fill: this.fillOn, conn_style: this.connStyle, conn_arrow: this.connArrow, node_kind: this.nodeKind },
+    toolbar: { tool: this.tool, groups: JSON.parse(JSON.stringify(this.groups)), recent: [...this.recent], text_format: { ...this.fmt }, snap_lines: this.snapLines, shape: this.shapeKind, fill: this.fillOn, conn_style: this.connStyle, conn_arrow: this.connArrow, node_kind: this.nodeKind },
     ...(this.kind === "board" ? { center: [Math.round((this.cw / 2 - this.view.tx) / this.view.scale), Math.round((this.ch / 2 - this.view.ty) / this.view.scale)] } : {}) }; }
   restoreView(st) {
     if (!st || typeof st !== "object") return;
@@ -1705,6 +1788,7 @@ export class Panel {
       if (Array.isArray(tb.recent)) this.recent = tb.recent.map((c) => { const p = typeof c === "string" ? M.parseHex(c) : null; return p ? M.toHex(...p) : null; }).filter(Boolean).slice(0, 10);
       const tf = tb.text_format;
       if (tf && typeof tf === "object") this.fmt = { dir: M.TEXT_DIRS.includes(tf.dir) ? tf.dir : this.fmt.dir, align: M.TEXT_ALIGNS.includes(tf.align) ? tf.align : this.fmt.align };
+      if (typeof tb.snap_lines === "boolean") this.snapLines = tb.snap_lines;
       if (typeof tb.shape === "string" && M.SHAPE_KINDS.some((k) => k.id === tb.shape)) this.shapeKind = tb.shape;
       if (typeof tb.fill === "boolean") this.fillOn = tb.fill;
       if (M.CONN_STYLES.includes(tb.conn_style)) this.connStyle = tb.conn_style;

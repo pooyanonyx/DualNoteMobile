@@ -8,12 +8,16 @@
 //   hl           {t:"hl", x1,y1,x2,y2, color}      (text highlight box)
 //   image        {t:"image", x1,y1,x2,y2, data: base64 PNG}
 //   note         {t:"note", x,y,w,h, text, color (paper), size}
-//   text         {t:"text", x,y, text, color, size}
+//   text         {t:"text", x,y, text, color, size}   optional: w (box width), dir/align, ruled (true = line pitch and baselines follow the
+//                                                    ruling of lined paper; false = free text placed on lined paper; absent = free / old item)
 // Any item may also carry alpha (0..255) and bright (-100..100).
 // Items are never modified in place: an edit creates a new object (cheap undo snapshots).
 
 export const PAGE_W = 595.0, PAGE_H = 842.0;             // notebook page = A4 in points
 export const PAPERS = ["blank", "lined", "grid"];
+// Lined paper: rule k is at y = RULE_TOP + k * RULE_PITCH (printed while y < page height - RULE_BOTTOM). Text written "on the lines"
+// (text item with ruled: true) is laid out on this same lattice, see render.js.
+export const RULE_TOP = 72.0, RULE_PITCH = 24.0, RULE_BOTTOM = 30.0;
 export const NOTE_W = 190.0, NOTE_H = 140.0, NOTE_HEADER = 16.0;
 // File-format identifiers keep their original "DualNote-..." names on purpose: existing files, annotated PDFs and the Windows app check them.
 export const NOTEBOOK_FORMAT = "DualNote-notebook";
@@ -225,6 +229,7 @@ function addFmt(d, out) {          // (hoisted: also used by node items)
     out.align = TEXT_ALIGNS.includes(d.align) ? d.align : (d.dir === "rtl" ? "right" : "left");
   }
   if (out.t === "text" && d.w !== undefined) { try { out.w = Math.max(20, Math.min(4000, round2(num(d.w)))); } catch { /* ignore bad optional value */ } }
+  if (out.t === "text" && typeof d.ruled === "boolean") out.ruled = d.ruled;
   return out;
 }
 export function sanitizeItem(d) {
